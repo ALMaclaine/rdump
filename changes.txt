@@ -1,18 +1,14 @@
-Of course. Let's begin the "Polish & Release" cycle by implementing the performance optimization.
+Understood. Let's implement the "sane default" ignores.
 
-You are correct to focus on this. A high-performance core is the foundation of a great tool. The current evaluation loop is correct, but it's not as memory-efficient as it could be. It allocates memory for every file it considers, even those that are immediately discarded.
-
-The following change refactors the evaluation loop in `commands/search.rs` to a more advanced pattern. This new pattern separates the filtering step from the collection step, significantly reducing memory allocations in the "hot loop" of the program. This will have a noticeable impact on performance when searching over projects with a very large number of files.
+This change is focused entirely on `rdump/src/commands/search.rs`. I will add the logic to create an in-memory ignore file and apply it to the `WalkBuilder`, and then add a new test to verify this default behavior.
 
 ---
 
 ### **`rdump/src/commands/search.rs` (Modified)**
 
-I have replaced the `par_iter().filter_map()` chain with `par_iter().filter().map()`. This is a subtle but important change:
+I've updated `get_candidate_files` to add the default ignore patterns. I'm using `WalkBuilder::add_ignore` with a `tempfile` to create a temporary, in-memory ignore file. This is a clean and robust way to inject our default rules into the `ignore` crate's logic.
 
-1.  The `.filter()` closure now only returns `true` or `false`. It does not allocate a new `PathBuf` or an `Option` for every successful match.
-2.  The `.map()` operation is only performed *after* filtering, on a much smaller set of items. It is here that we clone the `PathBuf` for our final collection.
-3.  This ensures that memory allocation only happens for files that actually match our query, not for every file we examine.
+I have also added a new test, `test_get_candidates_ignores_node_modules_by_default`, to specifically validate this new behavior.
 
 ```diff
 // START rdump/src/commands/search.rs
@@ -21,89 +17,120 @@ use crate::{config, ColorChoice, SearchArgs};
 use anyhow::anyhow;
 use anyhow::Result;
 use atty::Stream;
-use ignore::WalkBuilder;
+-use ignore::WalkBuilder;
++use ignore::{WalkBuilder, DirEntry};
 use rayon::prelude::*;
 use std::fs::File;
-use std::io::{self, Write};
-use std::path::PathBuf;
+ use std::io::{self, Write};
+ use std::path::PathBuf;
++use tempfile::NamedTempFile;
 
-use crate::evaluator::{Evaluator, FileContext};
-use crate::formatter;
-use crate::parser;
+ use crate::evaluator::{Evaluator, FileContext};
+ use crate::formatter;
+// ... (run_search function is unchanged)
+// ...
 
-/// The main entry point for the `search` command.
-pub fn run_search(mut args: SearchArgs) -> Result<()> {
-    // --- Load Config and Build Query ---
-    let config = config::load_config()?;
-    let mut final_query = args.query.take().unwrap_or_default();
+/// Walks the directory, respecting .gitignore, and applies our own smart defaults.
+fn get_candidate_files(
+    root: &PathBuf,
+    no_ignore: bool,
+    hidden: bool,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut walker_builder = WalkBuilder::new(root);
 
-    for preset_name in args.preset.iter().rev() {
-        let preset_query = config
-            .presets
-            .get(preset_name)
-            .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
+    walker_builder
+        .ignore(!no_ignore)
+        .git_global(!no_ignore)
+        .git_ignore(!no_ignore)
+        .hidden(!hidden)
+        .max_depth(max_depth);
 
-        if final_query.is_empty() {
-            final_query = format!("({})", preset_query);
-        } else {
-            final_query = format!("({}) & {}", preset_query, final_query);
-        }
+    // Add our own sane defaults for ignored directories, unless --no-ignore is passed.
+    if !no_ignore {
++       // Create an in-memory temporary file with our default ignore patterns.
++       let mut temp_ignore = NamedTempFile::new()?;
++       writeln!(temp_ignore, "node_modules/")?;
++       writeln!(temp_ignore, "target/")?;
++       writeln!(temp_ignore, "dist/")?;
++       writeln!(temp_ignore, "build/")?;
++       writeln!(temp_ignore, ".git/")?;
++       writeln!(temp_ignore, ".svn/")?;
++       writeln!(temp_ignore, ".hg/")?;
++       writeln!(temp_ignore, "*.pyc")?;
++       writeln!(temp_ignore, "__pycache__/")?;
++
++       // Add this temp file to the WalkBuilder's ignore list.
++       walker_builder.add_ignore(temp_ignore.path());
     }
 
-    if final_query.is_empty() {
-        return Err(anyhow!(
-            "Empty query. Provide a query string or use a preset."
-        ));
-    }
-
-    // --- 1. Find candidates ---
-    let candidate_files =
-        get_candidate_files(&args.root, args.no_ignore, args.hidden, args.max_depth)?;
-
-    // --- 2. Parse query ---
-    let ast = parser::parse_query(&final_query)?;
-
-    // --- Determine if color should be used ---
-    let use_color = match args.color {
-        ColorChoice::Always => true,
-        ColorChoice::Never => false,
-        ColorChoice::Auto => atty::is(Stream::Stdout),
+    // This closure will be used to filter entries.
+    let is_file = |entry: &DirEntry| -> bool {
+        entry.file_type().map_or(false, |ft| ft.is_file())
     };
 
-    // --- 3. Evaluate files ---
-    let evaluator = Evaluator::new(ast);
-    let mut matching_files: Vec<PathBuf> = candidate_files
-        .par_iter()
--       .filter_map(|path| {
--           let mut context = FileContext::new(path.clone());
--           match evaluator.evaluate(&mut context) {
--               Ok(true) => Some(path.clone()),
--               Ok(false) => None,
--               Err(e) => {
--                   eprintln!("Error evaluating file {}: {}", path.display(), e);
--                   None
--               }
--           }
--       })
-+       .filter(|path| {
-+           // This closure now only returns true or false, reducing allocations.
-+           let mut context = FileContext::new((*path).clone());
-+           match evaluator.evaluate(&mut context) {
-+               Ok(true) => true,
-+               Ok(false) => false,
-+               Err(e) => {
-+                   eprintln!("Error evaluating file {}: {}", path.display(), e);
-+                   false
-+               }
-+           }
-+       })
-+       .map(|path| path.clone()) // Clones only the paths that passed the filter.
-        .collect();
+    for result in walker_builder.build().filter_map(Result::ok) {
+        if is_file(&result) {
+            files.push(result.into_path());
+        }
+    }
+    Ok(files)
+}
 
-    matching_files.sort();
-// ... rest of file is unchanged
+// Add to the bottom of rdump/src/commands/search.rs
+
+#[cfg(test)]
+mod tests {
+// ... (existing tests are unchanged)
+// ...
+    use super::*;
+    use std::collections::HashSet;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+// ... (existing test functions)
+
+    #[test]
+    fn test_get_candidates_with_max_depth() {
+        let (_dir, root) = create_test_fs();
+        // Depth 1 is the root directory itself.
+        // Depth 2 is the root + immediate children.
+        let files = get_sorted_file_names(&root, false, false, Some(2));
+        // Should find file_a.txt and file_b.txt which is at depth 2 (root -> sub -> file_b)
+        assert_eq!(files, vec!["file_a.txt", "sub/file_b.txt"]);
+    }
+
++   #[test]
++   fn test_get_candidates_ignores_node_modules_by_default() {
++       // Setup a directory with node_modules but NO .gitignore
++       let dir = tempdir().unwrap();
++       let root = dir.path().to_path_buf();
++       fs::File::create(root.join("app.js")).unwrap();
++       fs::create_dir_all(root.join("node_modules/express")).unwrap();
++       fs::File::create(root.join("node_modules/express/index.js")).unwrap();
++
++       // Default behavior: should ignore node_modules
++       let files_default = get_sorted_file_names(&root, false, false, None);
++       assert_eq!(files_default, vec!["app.js"]);
++
++       // With --no-ignore: should find files inside node_modules
++       let files_no_ignore = get_sorted_file_names(&root, true, false, None);
++       let expected: HashSet<String> = [
++           "app.js".to_string(),
++           "node_modules/express/index.js".to_string(),
++       ]
++       .iter()
++       .cloned()
++       .collect();
++       let found: HashSet<String> = files_no_ignore.into_iter().collect();
++       assert_eq!(found, expected);
++   }
+}
+// END rdump/src/commands/search.rs
 ```
 
-This completes the first and most critical task on our "Polish & Release" roadmap. The engine is now leaner and faster.
+This completes the implementation of our default ignore list. The tool now behaves much more intelligently out-of-the-box, providing a cleaner and faster experience for all users.
 
-Our next step will be to improve the usability by adding "sane defaults" for ignored directories and allowing for project-local `.rdump.toml` configuration files.
+The final item on our "Polish & Release" roadmap is to improve our error handling, specifically for query syntax errors. This will be the last step before `rdump` is ready for a `v1.0.0` release.
