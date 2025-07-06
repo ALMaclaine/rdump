@@ -1,8 +1,10 @@
+
 #![allow(dead_code)] // a-llow dead code for this common helper module
 
 use std::fs;
 use std::io::Write;
-use tempfile::{tempdir, TempDir};
+use tempfile::TempDir;
+use tempfile::tempdir;
 
 /// A helper to set up a temporary directory with a multi-language sample project.
 pub fn setup_test_project() -> TempDir {
@@ -11,7 +13,7 @@ pub fn setup_test_project() -> TempDir {
     fs::create_dir(&src_dir).unwrap();
 
     let main_rs_content = r#"
-// This is the main application file.
+// TODO: Refactor this later
 use crate::lib::User;
 
 struct Cli {
@@ -29,8 +31,10 @@ pub fn main() {
 // This is a library file.
 use serde::Serialize;
 
+pub type UserId = u64;
+
 pub struct User {
-    id: u64,
+    id: UserId,
     name: String,
 }
 
@@ -52,12 +56,14 @@ pub enum Role {
     let mut readme_md = fs::File::create(dir.path().join("README.md")).unwrap();
     readme_md.write_all(readme_md_content.as_bytes()).unwrap();
 
+    // --- Add a Python file ---
     let py_content = r#"
+# FIXME: Hardcoded path
 import os
 
 class Helper:
     def __init__(self):
-        self.path = os.getcwd()
+        self.path = "/tmp/data"
 
 def run_helper():
     h = Helper()
@@ -66,11 +72,13 @@ def run_helper():
     let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
     py_file.write_all(py_content.as_bytes()).unwrap();
 
+    // --- NEW: Add JS and TS files ---
     let js_content = r#"
+// HACK: for demo purposes
 import { a } from './lib';
 
 export class OldLogger {
-    log(msg) { console.log(msg); }
+    log(msg) { console.log("logging: " + msg); }
 }
 "#;
     fs::File::create(src_dir.join("logger.js"))
@@ -79,6 +87,7 @@ export class OldLogger {
         .unwrap();
 
     let ts_content = r#"
+// REVIEW: Use a real logging library
 import * as path from 'path';
 
 export interface ILog {

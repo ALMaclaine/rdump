@@ -137,3 +137,40 @@ fn test_logical_or_across_files() {
         .stdout(predicate::str::contains("src/main.rs"))
         .stdout(predicate::str::contains("src/lib.rs"));
 }
+
+#[test]
+fn test_comment_predicate_rust() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("comment:TODO")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/main.rs"))
+        .stdout(predicate::str::contains("src/lib.rs").not());
+}
+
+#[test]
+fn test_str_predicate_rust() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("str:\"Hello, world!\"")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/main.rs"));
+}
+
+#[test]
+fn test_type_and_struct_predicates_rust() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("type:UserId & struct:User")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/lib.rs"));
+}

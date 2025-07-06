@@ -56,3 +56,39 @@ fn test_import_finds_typescript_import() {
         .stdout(predicate::str::contains("log_utils.ts"))
         .stdout(predicate::str::contains("import * as path from 'path';"));
 }
+
+#[test]
+fn test_comment_predicate_typescript() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("comment:REVIEW")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("log_utils.ts"));
+}
+
+#[test]
+fn test_str_predicate_javascript() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("str:logging:")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("logger.js"));
+}
+
+#[test]
+fn test_interface_and_type_predicates_typescript() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("interface:ILog & type:LogLevel")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("log_utils.ts"));
+}

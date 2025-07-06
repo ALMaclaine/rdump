@@ -7,12 +7,24 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
     let language = tree_sitter_typescript::language_typescript();
     let mut queries = HashMap::new();
 
-    queries.insert(PredicateKey::Def, "[ (class_declaration name: (type_identifier) @match) (interface_declaration name: (type_identifier) @match) (type_alias_declaration name: (type_identifier) @match) ]".to_string());
+    let def_query = "[
+    (class_declaration name: (type_identifier) @match)
+    (interface_declaration name: (type_identifier) @match)
+   ]";
+   queries.insert(PredicateKey::Def, def_query.to_string());
+   queries.insert(PredicateKey::Class, "(class_declaration name: (type_identifier) @match)".to_string());
+   queries.insert(PredicateKey::Interface, "(interface_declaration name: (type_identifier) @match)".to_string());
+   queries.insert(PredicateKey::Type, "(type_alias_declaration name: (type_identifier) @match)".to_string());
+   queries.insert(PredicateKey::Enum, "(enum_declaration name: (type_identifier) @match)".to_string());
+
     queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
     queries.insert(
         PredicateKey::Import,
         "(import_statement) @match".to_string(),
     );
+
+   queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
+   queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());
 
     LanguageProfile { language, queries }
 }

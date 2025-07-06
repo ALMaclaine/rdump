@@ -61,10 +61,22 @@ pub struct SearchArgs {
     ///   contains:<str>     - Literal string a file contains
     ///   matches:<regex>    - Regular expression a file's content matches
     ///
-    /// CODE-AWARE PREDICATES (for Rust, Python):
-    ///   def:<str>          - A definition (class, struct, enum, trait)
-    ///   func:<str>         - A function or method definition
-    ///   import:<str>       - An import or use statement
+   /// CODE-AWARE PREDICATES (for Rust, Python, JS, TS):
+   ///   def:<str>          - A generic definition (class, struct, enum, etc.)
+   ///   func:<str>         - A function or method
+   ///   import:<str>       - An import or use statement
+   ///
+   /// GRANULAR DEFINITIONS:
+   ///   class:<str>        - A class definition
+   ///   struct:<str>       - A struct definition
+   ///   enum:<str>         - An enum definition
+   ///   interface:<str>    - An interface definition
+   ///   trait:<str>        - A trait definition
+   ///   type:<str>         - A type alias
+   ///
+   /// SYNTACTIC CONTENT:
+   ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
+   ///   str:<str>          - Text inside a string literal
     #[arg(verbatim_doc_comment)]
     pub query: Option<String>,
     #[arg(long, short)]

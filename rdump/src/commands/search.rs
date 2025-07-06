@@ -55,17 +55,19 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let evaluator = Evaluator::new(ast);
     let mut matching_files: Vec<PathBuf> = candidate_files
         .par_iter()
-        .filter_map(|path| {
-            let mut context = FileContext::new(path.clone());
-            match evaluator.evaluate(&mut context) {
-                Ok(true) => Some(path.clone()),
-                Ok(false) => None,
-                Err(e) => {
-                    eprintln!("Error evaluating file {}: {}", path.display(), e);
-                    None
-                }
-            }
-        })
+       .filter(|path| {
+           // This closure now only returns true or false, reducing allocations.
+           let mut context = FileContext::new((*path).clone());
+           match evaluator.evaluate(&mut context) {
+               Ok(true) => true,
+               Ok(false) => false,
+               Err(e) => {
+                   eprintln!("Error evaluating file {}: {}", path.display(), e);
+                   false
+               }
+           }
+       })
+       .map(|path| path.clone()) // Clones only the paths that passed the filter.
         .collect();
 
     matching_files.sort();

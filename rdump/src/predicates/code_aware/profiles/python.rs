@@ -7,14 +7,9 @@ pub(super) fn create_python_profile() -> LanguageProfile {
     let language = tree_sitter_python::language();
     let mut queries = HashMap::new();
 
-    // Query for class definitions.
-    queries.insert(
-        PredicateKey::Def,
-        "
-        (class_definition name: (identifier) @match)
-        "
-        .to_string(),
-    );
+    let class_def_query = "(class_definition name: (identifier) @match)";
+   queries.insert(PredicateKey::Def, class_def_query.to_string());
+   queries.insert(PredicateKey::Class, class_def_query.to_string());
 
     // Query for function definitions.
     queries.insert(
@@ -36,6 +31,9 @@ pub(super) fn create_python_profile() -> LanguageProfile {
         "
         .to_string(),
     );
+
+   queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
+   queries.insert(PredicateKey::Str, "(string) @match".to_string());
 
     LanguageProfile { language, queries }
 }

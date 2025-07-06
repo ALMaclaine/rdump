@@ -46,6 +46,30 @@ fn test_import_finds_python_import() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("helper.py"))
-        .stdout(predicate::str::contains("```py")) // Check for markdown code fence
+        .stdout(predicate::str::contains("import os"))
         .stdout(predicate::str::contains("src/lib.rs").not());
+}
+
+#[test]
+fn test_comment_and_class_predicates_python() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("comment:FIXME & class:Helper")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("helper.py"));
+}
+
+#[test]
+fn test_str_predicate_python() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("str:/tmp/data")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("helper.py"));
 }

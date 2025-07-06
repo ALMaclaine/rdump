@@ -7,7 +7,7 @@ use tree_sitter::{Query, QueryCursor};
 mod profiles;
 
 /// The evaluator that uses tree-sitter to perform code-aware queries.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CodeAwareEvaluator;
 
 impl PredicateEvaluator for CodeAwareEvaluator {
@@ -50,12 +50,15 @@ impl PredicateEvaluator for CodeAwareEvaluator {
                     let captured_node = capture.node;
                     let captured_text = captured_node.utf8_text(content.as_bytes())?;
 
-                    // `import:` uses substring matching, `def:` and `func:` use exact matching.
-                    let is_match = if key == &PredicateKey::Import {
-                        captured_text.contains(value)
-                    } else {
-                        captured_text == value
-                    };
+                    // Use the correct matching strategy based on the predicate type.
+                   let is_match = match key {
+                       // Content-based predicates check for substrings.
+                       PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
+                           captured_text.contains(value)
+                       }
+                       // Definition-based predicates require an exact match on the identifier.
+                       _ => captured_text == value,
+                   };
 
                     if is_match {
                         return Ok(true);

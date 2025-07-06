@@ -7,17 +7,20 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     let language = tree_sitter_rust::language();
     let mut queries = HashMap::new();
 
-    // Query for struct, enum, and trait definitions.
-    // We capture the node associated with the name using `@match`.
-    queries.insert(
-        PredicateKey::Def,
-        r#"
+    let def_query = r#"
         (struct_item name: (_) @match)
         (enum_item name: (_) @match)
         (trait_item name: (_) @match)
-        "#
-        .to_string(),
+        "#;
+
+    queries.insert(
+        PredicateKey::Def,
+        def_query.to_string(),
     );
+   queries.insert(PredicateKey::Struct, "(struct_item name: (_) @match)".to_string());
+   queries.insert(PredicateKey::Enum, "(enum_item name: (_) @match)".to_string());
+   queries.insert(PredicateKey::Trait, "(trait_item name: (_) @match)".to_string());
+   queries.insert(PredicateKey::Type, "(type_item name: (type_identifier) @match)".to_string());
 
     // Query for standalone functions and methods in traits or impls.
     queries.insert(
@@ -37,6 +40,9 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
         "
         .to_string(),
     );
+
+    queries.insert(PredicateKey::Comment, "(line_comment) @match".to_string());
+    queries.insert(PredicateKey::Str, "(string_literal) @match".to_string());
 
     LanguageProfile { language, queries }
 }

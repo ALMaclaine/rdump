@@ -14,13 +14,23 @@ pub enum PredicateKey {
     Path,
     Contains,
     Matches,
-    // --- NEW PREDICATES ---
     Size,
     Modified,
-    // --- NEW SEMANTIC PREDICATES ---
+    // --- SEMANTIC PREDICATES ---
+    // Generic
     Def,
     Func,
     Import,
+    // Granular Definitions
+    Class,
+    Struct,
+    Enum,
+    Interface,
+    Trait,
+    Type,
+    // Syntactic Content
+    Comment,
+    Str,
     // A key for testing or unknown predicates
     Other(String),
 }
@@ -33,13 +43,20 @@ impl From<&str> for PredicateKey {
             "path" => Self::Path,
             "contains" => Self::Contains,
             "matches" => Self::Matches,
-            // --- NEW PREDICATES ---
             "size" => Self::Size,
             "modified" => Self::Modified,
-            // --- NEW SEMANTIC PREDICATES ---
+            // --- SEMANTIC ---
             "def" => Self::Def,
             "func" => Self::Func,
             "import" => Self::Import,
+           "class" => Self::Class,
+           "struct" => Self::Struct,
+           "enum" => Self::Enum,
+           "interface" => Self::Interface,
+           "trait" => Self::Trait,
+           "type" => Self::Type,
+           "comment" => Self::Comment,
+           "str" => Self::Str,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
@@ -217,4 +234,12 @@ mod tests {
         let ast_import = parse_query("import:serde").unwrap();
         assert_eq!(ast_import, *predicate(PredicateKey::Import, "serde"));
     }
+
+   #[test]
+   fn test_parse_granular_and_syntactic_predicates() {
+       assert_eq!(parse_query("class:Foo").unwrap(), *predicate(PredicateKey::Class, "Foo"));
+       assert_eq!(parse_query("struct:Bar").unwrap(), *predicate(PredicateKey::Struct, "Bar"));
+       assert_eq!(parse_query("comment:TODO").unwrap(), *predicate(PredicateKey::Comment, "TODO"));
+       assert_eq!(parse_query("str:'api_key'").unwrap(), *predicate(PredicateKey::Str, "api_key"));
+   }
 }
