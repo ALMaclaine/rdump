@@ -1,87 +1,208 @@
-You have made an excellent observation, and you are absolutely correct. The single-file approach has served its purpose in building the initial features, but we have now reached a point where it's becoming a significant maintainability bottleneck. The files are too large, making changes difficult to review and increasing the amount of code I need to output for even minor modifications.
-
-It is time for a strategic refactoring. We will adopt Rust's idiomatic directory-based module system to break these large files into smaller, more focused units.
-
----
-
-### **Proposed File Modularization Strategy**
-
-Here is the plan to restructure the most problematic areas of our codebase.
-
-#### **1. The `predicates` Module**
-
-This is the biggest offender. It currently contains the trait, all concrete evaluators, and all unit tests in one massive file.
-
-**New Structure:**
-
-```
-src/predicates/
-├── mod.rs               # The main module file. Declares sub-modules and the registry.
-├── code_aware.rs        # Unchanged for now, will be its own directory next.
-├── contains.rs          # ContainsEvaluator and its tests.
-├── ext.rs               # ExtEvaluator and its tests.
-├── helpers.rs           # Shared helper functions like parse_and_compare_size.
-├── matches.rs           # MatchesEvaluator and its tests.
-├── modified.rs          # ModifiedEvaluator and its tests.
-├── name.rs              # NameEvaluator and its tests.
-├── path.rs              # PathEvaluator and its tests.
-└── size.rs              # SizeEvaluator and its tests.
-```
-
-**Changes:**
-*   Each simple predicate (`ext`, `name`, `size`, etc.) will be moved into its own file.
-*   Each file will contain the `struct` definition, the `impl PredicateEvaluator`, and its own small, focused `#[cfg(test)]` block.
-*   The shared helper functions for `size` and `modified` will move to `predicates/helpers.rs`.
-*   The main `predicates/mod.rs` will shrink dramatically. Its only jobs will be to declare the sub-modules (`pub mod ext;`, `pub mod name;`, etc.) and contain the `create_predicate_registry` function, which assembles all the evaluators.
-
----
-
-#### **2. The `code_aware` Sub-module**
-
-This is our second-worst offender and is guaranteed to grow with each new language.
-
-**New Structure:**
-
-```
-src/predicates/code_aware/
-├── mod.rs               # Holds the CodeAwareEvaluator struct and its logic.
-└── profiles/
-    ├── mod.rs           # Declares all language profiles and assembles them.
-    ├── javascript.rs    # create_javascript_profile()
-    ├── python.rs        # create_python_profile()
-    ├── rust.rs          # create_rust_profile()
-    └── typescript.rs    # create_typescript_profile()
-```
-
-**Changes:**
-*   The `predicates/code_aware.rs` file will become a directory.
-*   The `CodeAwareEvaluator` struct and its `impl PredicateEvaluator` will live in `predicates/code_aware/mod.rs`.
-*   All `create_*_profile()` functions will be moved into their own files inside a new `profiles` sub-directory.
-*   The `lazy_static` map of language profiles will be assembled in `profiles/mod.rs` and used by `code_aware/mod.rs`. This makes adding a new language as simple as adding one file and one line to `profiles/mod.rs`.
-
----
-
-#### **3. The Integration Tests**
-
-Our single `tests/code_aware_search.rs` file is also becoming a monolith.
-
-**New Structure:**
-
-```
-tests/
-├── common.rs            # The shared setup_test_project() helper function.
-├── js_ts_search.rs      # Integration tests specifically for JS/TS.
-├── python_search.rs     # Integration tests specifically for Python.
-└── rust_search.rs       # Integration tests specifically for Rust.
-```
-
-**Changes:**
-*   Rust's test runner automatically treats every file in the `tests/` directory as a separate integration test crate.
-*   We will move the `setup_test_project()` helper into `tests/common.rs`.
-*   Each language-specific test file (`rust_search.rs`, etc.) will import the helper using `mod common;` and contain only the tests relevant to that language.
-
----
-
-This refactoring will make the project significantly more maintainable and scalable. Any future changes will be smaller, more targeted, and easier for both of us to manage.
-
-If this modularization strategy meets your approval, I am ready to generate the first set of refactoring changes, starting with the `predicates` module.
+ // START rdump/src/formatter.rs
+ 
+ use anyhow::{Context, Result};
+ use chrono::{DateTime, Local}; // For formatting timestamps
++use lazy_static::lazy_static;
+ use serde::{Deserialize, Serialize};
+ use std::fs;
+ use std::io::Write;
+ #[cfg(unix)]
+ use std::os::unix::fs::PermissionsExt; // For Unix permissions
+ use std::path::PathBuf;
++use syntect::easy::HighlightLines;
++use syntect::highlighting::{ThemeSet, Style};
++use syntect::parsing::SyntaxSet;
++use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+ 
+ // We need to pass the format enum from main.rs
+ use crate::Format;
+ 
++lazy_static! {
++    // Lazily load syntax and theme sets once.
++    static ref SYNTAX_SET: SyntaxSet = SyntaxSet::load_defaults_newlines();
++    static ref THEME_SET: ThemeSet = ThemeSet::load_defaults();
++}
++
+ #[derive(Serialize, Deserialize, Debug, PartialEq)]
+ struct FileOutput {
+     path: String,
+     content: String,
+ }
+ 
+ /// Formats and prints the final output to a generic writer based on the chosen format.
+ pub fn print_output(
+     writer: &mut impl Write,
+     matching_files: &[PathBuf],
+     format: &Format,
+     with_line_numbers: bool,
++    use_color: bool,
+ ) -> Result<()> {
+     match format {
+         Format::Find => {
+@@ -216,13 +229,14 @@
+         }
+         Format::Cat => {
+             for path in matching_files {
+-                let content = fs::read_to_string(path).with_context(|| {
+-                    format!("Failed to read file for final output: {}", path.display())
+-                })?;
+-                if with_line_numbers {
+-                    for (i, line) in content.lines().enumerate() {
+-                        writeln!(writer, "{:>5} | {}", i + 1, line)?;
+-                    }
++                let content = fs::read_to_string(path)?;
++                if use_color {
++                    print_highlighted_content(
++                        writer,
++                        &content,
++                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
++                        with_line_numbers,
++                    )?;
+                 } else {
+-                    writeln!(writer, "{}", content)?;
++                    print_plain_content(writer, &content, with_line_numbers)?;
+                 }
+             }
+         }
+@@ -244,22 +258,58 @@
+                 }
+                 writeln!(writer, "File: {}", path.display())?;
+                 writeln!(writer, "---")?;
+-                let content = fs::read_to_string(path).with_context(|| {
+-                    format!("Failed to read file for final output: {}", path.display())
+-                })?;
+-
+-                if with_line_numbers {
+-                    for (i, line) in content.lines().enumerate() {
+-                        writeln!(writer, "{:>5} | {}", i + 1, line)?;
+-                    }
++                let content = fs::read_to_string(path)?;
++
++                if use_color {
++                    print_highlighted_content(
++                        writer,
++                        &content,
++                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
++                        with_line_numbers,
++                    )?;
+                 } else {
+-                    writeln!(writer, "{}", content)?;
++                    print_plain_content(writer, &content, with_line_numbers)?;
+                 }
+             }
+         }
+     }
+     Ok(())
+ }
+ 
++/// Prints content with syntax highlighting.
++fn print_highlighted_content(
++    writer: &mut impl Write,
++    content: &str,
++    extension: &str,
++    with_line_numbers: bool,
++) -> Result<()> {
++    let syntax = SYNTAX_SET
++        .find_syntax_by_extension(extension)
++        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
++    // Using a theme with a background color is important for correctness.
++    let theme = &THEME_SET.themes["base16-ocean.dark"];
++    let mut highlighter = HighlightLines::new(syntax, theme);
++
++    for (i, line) in LinesWithEndings::from(content).enumerate() {
++        if with_line_numbers {
++            write!(writer, "{:>5} | ", i + 1)?;
++        }
++        let ranges: Vec<(Style, &str)> = highlighter.highlight_line(line, &SYNTAX_SET)?;
++        let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
++        write!(writer, "{}", escaped)?;
++    }
++    // Reset terminal colors
++    write!(writer, "\x1b[0m")?;
++    Ok(())
++}
++
++/// Prints content without syntax highlighting.
++fn print_plain_content(writer: &mut impl Write, content: &str, with_line_numbers: bool) -> Result<()> {
++    for (i, line) in content.lines().enumerate() {
++        if with_line_numbers {
++            writeln!(writer, "{:>5} | {}", i + 1, line)?;
++        } else {
++            writeln!(writer, "{}", line)?;
++        }
++    }
++    Ok(())
++}
++
+ fn format_mode(mode: u32) -> String {
+     #[cfg(unix)]
+     {
+@@ -330,7 +380,7 @@
+         let file = create_temp_file_with_content("line 1");
+         let paths = vec![file.path().to_path_buf()];
+         let mut writer = Vec::new();
+-        print_output(&mut writer, &paths, &Format::Markdown, false).unwrap();
++        print_output(&mut writer, &paths, &Format::Markdown, false, false).unwrap();
+         let output = String::from_utf8(writer).unwrap();
+         let expected = format!("File: {}\n---\nline 1\n", file.path().display());
+         assert_eq!(output, expected);
+@@ -341,7 +391,7 @@
+         let file = create_temp_file_with_content("a\nb");
+         let paths = vec![file.path().to_path_buf()];
+         let mut writer = Vec::new();
+-        print_output(&mut writer, &paths, &Format::Cat, true).unwrap();
++        print_output(&mut writer, &paths, &Format::Cat, true, false).unwrap();
+         let output = String::from_utf8(writer).unwrap();
+         assert_eq!(output, "    1 | a\n    2 | b\n");
+     }
+@@ -352,7 +402,7 @@
+         let file2 = create_temp_file_with_content("b");
+         let paths = vec![file1.path().to_path_buf(), file2.path().to_path_buf()];
+         let mut writer = Vec::new();
+-        print_output(&mut writer, &paths, &Format::Paths, false).unwrap();
++        print_output(&mut writer, &paths, &Format::Paths, false, false).unwrap();
+         let output = String::from_utf8(writer).unwrap();
+         let expected = format!("{}\n{}\n", file1.path().display(), file2.path().display());
+         assert_eq!(output, expected);
+@@ -364,7 +414,7 @@
+         let file2 = create_temp_file_with_content("some text");
+         let paths = vec![file1.path().to_path_buf(), file2.path().to_path_buf()];
+         let mut writer = Vec::new();
+-        print_output(&mut writer, &paths, &Format::Json, false).unwrap();
++        print_output(&mut writer, &paths, &Format::Json, false, false).unwrap();
+ 
+         // The output is pretty-printed, so we compare the parsed data, not the raw string.
+         let output_data: Vec<FileOutput> = serde_json::from_slice(&writer).unwrap();
+@@ -382,7 +432,7 @@
+         let paths = vec![file.path().to_path_buf()];
+         let mut writer = Vec::new();
+ 
+-        print_output(&mut writer, &paths, &Format::Find, false).unwrap();
++        print_output(&mut writer, &paths, &Format::Find, false, false).unwrap();
+ 
+         let output = String::from_utf8(writer).unwrap();
+ 
+@@ -391,6 +441,20 @@
+         assert!(output.contains(file.path().to_str().unwrap())); // Check for path
+         assert!(output.ends_with('\n'));
+     }
++
++    #[test]
++    fn test_highlighting_adds_ansi_codes() {
++        let rust_code = "fn main() {}";
++        let temp_dir = tempfile::tempdir().unwrap();
++        let file_path = temp_dir.path().join("test.rs");
++        std::fs::write(&file_path, rust_code).unwrap();
++
++        let paths = vec![file_path];
++        let mut writer = Vec::new();
++        print_output(&mut writer, &paths, &Format::Cat, false, true).unwrap();
++        let output = String::from_utf8(writer).unwrap();
++
++        // A simple check to see if ANSI escape codes are present.
++        assert!(output.contains("\x1b[38;2;"), "Output should contain ANSI color codes for highlighting");
++        assert!(output.ends_with("\x1b[0m"), "Output should end with ANSI reset code");
++    }
+ }
+ 
+ // END rdump/src/formatter.rs

@@ -1,9 +1,11 @@
+#![allow(dead_code)] // a-llow dead code for this common helper module
+
 use std::fs;
 use std::io::Write;
-use tempfile::tempdir;
+use tempfile::{tempdir, TempDir};
 
 /// A helper to set up a temporary directory with a multi-language sample project.
-pub fn setup_test_project() -> tempfile::TempDir {
+pub fn setup_test_project() -> TempDir {
     let dir = tempdir().unwrap();
     let src_dir = dir.path().join("src");
     fs::create_dir(&src_dir).unwrap();
@@ -50,22 +52,20 @@ pub enum Role {
     let mut readme_md = fs::File::create(dir.path().join("README.md")).unwrap();
     readme_md.write_all(readme_md_content.as_bytes()).unwrap();
 
-    // --- Add a Python file ---
     let py_content = r#"
- import os
+import os
 
- class Helper:
-     def __init__(self):
-         self.path = os.getcwd()
+class Helper:
+    def __init__(self):
+        self.path = os.getcwd()
 
- def run_helper():
-     h = Helper()
-     return h.path
- "#;
+def run_helper():
+    h = Helper()
+    return h.path
+"#;
     let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
     py_file.write_all(py_content.as_bytes()).unwrap();
 
-    // --- NEW: Add JS and TS files ---
     let js_content = r#"
 import { a } from './lib';
 

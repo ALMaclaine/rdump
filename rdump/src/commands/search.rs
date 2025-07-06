@@ -73,6 +73,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &matching_files,
         &args.format,
         args.line_numbers,
+        true, // TODO: Make this configurable
     )?;
 
     Ok(())

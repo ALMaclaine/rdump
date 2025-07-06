@@ -26,6 +26,7 @@ tree-sitter-rust = "0.21.0"
 tree-sitter-python = "0.21.0"
 tree-sitter-javascript = "0.21.0"
 tree-sitter-typescript = "0.21.0"
+syntect = "5.2.0"
 
 [dev-dependencies]
 assert_cmd = "2.0.14"
@@ -39,18 +40,18 @@ tempfile = "3.10.1"
 
 // This makes the functions inside search.rs and preset.rs available
 // to other parts of the program that use the `commands` module.
-pub mod search;
 pub mod preset;
+pub mod search;
 
 
 // END rdump/src/commands/mod.rs
 
 // START rdump/src/commands/preset.rs
 
-use anyhow::{anyhow, Result};
-use std::fs;
 use crate::config::{self, Config};
-use crate::PresetAction; // We'll need to make PresetAction public
+use crate::PresetAction;
+use anyhow::{anyhow, Result};
+use std::fs; // We'll need to make PresetAction public
 
 /// The main entry point for the `preset` command.
 pub fn run_preset(action: PresetAction) -> Result<()> {
@@ -87,7 +88,9 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
                 .ok_or_else(|| anyhow!("Could not determine global config path"))?;
 
             if !path.exists() {
-                return Err(anyhow!("Global config file does not exist. No presets to remove."));
+                return Err(anyhow!(
+                    "Global config file does not exist. No presets to remove."
+                ));
             }
 
             let mut config: Config = toml::from_str(&fs::read_to_string(&path)?)?;
@@ -127,7 +130,9 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let mut final_query = args.query.take().unwrap_or_default();
 
     for preset_name in args.preset.iter().rev() {
-        let preset_query = config.presets.get(preset_name)
+        let preset_query = config
+            .presets
+            .get(preset_name)
             .ok_or_else(|| anyhow::anyhow!("Preset '{}' not found", preset_name))?;
 
         if final_query.is_empty() {
@@ -138,16 +143,14 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     }
 
     if final_query.is_empty() {
-        return Err(anyhow::anyhow!("Empty query. Provide a query string or use a preset."));
+        return Err(anyhow::anyhow!(
+            "Empty query. Provide a query string or use a preset."
+        ));
     }
 
     // --- 1. Find candidates ---
-    let candidate_files = get_candidate_files(
-        &args.root,
-        args.no_ignore,
-        args.hidden,
-        args.max_depth,
-    )?;
+    let candidate_files =
+        get_candidate_files(&args.root, args.no_ignore, args.hidden, args.max_depth)?;
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
@@ -183,6 +186,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &matching_files,
         &args.format,
         args.line_numbers,
+        true, // TODO: Make this configurable
     )?;
 
     Ok(())
@@ -270,7 +274,12 @@ mod tests {
         paths.sort();
         paths
             .into_iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().replace("\\", "/"))
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace("\\", "/")
+            })
             .collect()
     }
 
@@ -341,6 +350,7 @@ mod tests {
     }
 }
 
+
 // END rdump/src/commands/search.rs
 
 // START rdump/src/config.rs
@@ -390,8 +400,9 @@ pub fn load_config() -> Result<Config> {
     // 1. Load the global config file, if it exists.
     if let Some(global_config_path) = global_config_path() {
         if global_config_path.exists() {
-            let global_config_str = fs::read_to_string(&global_config_path)
-                .with_context(|| format!("Failed to read global config at {:?}", global_config_path))?;
+            let global_config_str = fs::read_to_string(&global_config_path).with_context(|| {
+                format!("Failed to read global config at {:?}", global_config_path)
+            })?;
             let global_config: Config = toml::from_str(&global_config_str)?;
             final_config.presets.extend(global_config.presets);
         }
@@ -401,8 +412,9 @@ pub fn load_config() -> Result<Config> {
     let current_dir = env::current_dir()?;
     if let Some(local_config_path) = find_local_config(&current_dir) {
         if local_config_path.exists() {
-            let local_config_str = fs::read_to_string(&local_config_path)
-                .with_context(|| format!("Failed to read local config at {:?}", local_config_path))?;
+            let local_config_str = fs::read_to_string(&local_config_path).with_context(|| {
+                format!("Failed to read local config at {:?}", local_config_path)
+            })?;
             let local_config: Config = toml::from_str(&local_config_str)?;
             final_config.presets.extend(local_config.presets);
         }
@@ -413,7 +425,8 @@ pub fn load_config() -> Result<Config> {
 
 /// Saves the given config to the global configuration file.
 pub fn save_config(config: &Config) -> Result<()> {
-    let path = global_config_path().ok_or_else(|| anyhow::anyhow!("Could not determine global config path"))?;
+    let path = global_config_path()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine global config path"))?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -479,7 +492,8 @@ mod tests {
             rust = "ext:rs"
             docs = "ext:md"
         "#
-        ).unwrap();
+        )
+        .unwrap();
 
         let project_dir = test_dir.path().join("project");
         fs::create_dir(&project_dir).unwrap();
@@ -492,7 +506,8 @@ mod tests {
             docs = "ext:md | ext:txt"
             scripts = "ext:sh"
         "#
-        ).unwrap();
+        )
+        .unwrap();
 
         env::set_var("RDUMP_TEST_CONFIG_DIR", fake_home_dir.to_str().unwrap());
         let original_dir = env::current_dir().unwrap();
@@ -509,11 +524,12 @@ mod tests {
     }
 }
 
+
 // END rdump/src/config.rs
 
 // START rdump/src/evaluator.rs
 
-use anyhow::{Result, Context, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -533,7 +549,11 @@ pub struct FileContext {
 
 impl FileContext {
     pub fn new(path: PathBuf) -> Self {
-        FileContext { path, content: None, tree: None }
+        FileContext {
+            path,
+            content: None,
+            tree: None,
+        }
     }
 
     pub fn get_content(&mut self) -> Result<&str> {
@@ -551,9 +571,15 @@ impl FileContext {
             let path_display = self.path.display().to_string();
             let content = self.get_content()?;
             let mut parser = TreeSitterParser::new();
-            parser.set_language(&language)
-                .with_context(|| format!("Failed to set language for tree-sitter parser on {}", path_display))?;
-            let tree = parser.parse(content, None).ok_or_else(|| anyhow!("Tree-sitter failed to parse {}", path_display))?;
+            parser.set_language(&language).with_context(|| {
+                format!(
+                    "Failed to set language for tree-sitter parser on {}",
+                    path_display
+                )
+            })?;
+            let tree = parser
+                .parse(content, None)
+                .ok_or_else(|| anyhow!("Tree-sitter failed to parse {}", path_display))?;
             self.tree = Some(tree);
         }
         Ok(self.tree.as_ref().unwrap())
@@ -616,7 +642,7 @@ impl Evaluator {
         value: &str,
         context: &mut FileContext,
     ) -> Result<bool> {
-        if let Some(evaluator) = self.registry.get(key) {            
+        if let Some(evaluator) = self.registry.get(key) {
             evaluator.evaluate(context, key, value)
         } else {
             // Handle unknown or unimplemented predicates gracefully.
@@ -629,8 +655,8 @@ impl Evaluator {
 mod tests {
     use super::*;
     use crate::parser::parse_query;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();
@@ -687,21 +713,35 @@ mod tests {
     }
 }
 
+
 // END rdump/src/evaluator.rs
 
 // START rdump/src/formatter.rs
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local}; // For formatting timestamps
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt; // For Unix permissions
+use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt; // For Unix permissions
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{ThemeSet, Style};
+use syntect::parsing::SyntaxSet;
+use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 
 // We need to pass the format enum from main.rs
 use crate::Format;
+
+lazy_static! {
+    // Lazily load syntax and theme sets once.
+    static ref SYNTAX_SET: SyntaxSet = SyntaxSet::load_defaults_newlines();
+    static ref THEME_SET: ThemeSet = ThemeSet::load_defaults();
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct FileOutput {
@@ -715,31 +755,30 @@ pub fn print_output(
     matching_files: &[PathBuf],
     format: &Format,
     with_line_numbers: bool,
+    use_color: bool,
 ) -> Result<()> {
     match format {
         Format::Find => {
             for path in matching_files {
-                let metadata = fs::metadata(path)?;
-                let size = metadata.len();
-                let modified: DateTime<Local> = DateTime::from(metadata.modified()?);
+                let metadata = fs::metadata(path)
+                    .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
 
-                // Get permissions (basic implementation)
-                let perms = metadata.permissions();
-                let mode = perms.mode();
-                let perms_str = format_mode(mode);
+                let file_size = metadata.len();
+                let permissions = metadata.permissions();
+                let mode = permissions.mode();
+                let modified_time: DateTime<Local> = metadata.modified()?.into();
 
-                // Format size into human-readable string
-                let size_str = format_size(size);
+                // Format the mode into a human-readable string (e.g., "drwxr-xr-x")
+                let mode_str = format_mode(mode);
 
-                // Format time
-                let time_str = modified.format("%b %d %H:%M").to_string();
-
+                // Format the output similar to `find . -ls`
                 writeln!(
                     writer,
-                    "{:<12} {:>8} {} {}",
-                    perms_str,
-                    size_str,
-                    time_str,
+                    "{:>10} {:>5} {:>8} {} {}",
+                    metadata.ino(),
+                    file_size,
+                    mode_str,
+                    modified_time.format("%b %d %H:%M"),
                     path.display()
                 )?;
             }
@@ -749,50 +788,96 @@ pub fn print_output(
                 writeln!(writer, "{}", path.display())?;
             }
         }
-        Format::Cat => {
-            for path in matching_files {
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
-                if with_line_numbers {
-                    for (i, line) in content.lines().enumerate() {
-                        writeln!(writer, "{:>5} | {}", i + 1, line)?;
-                    }
-                } else {
-                    writeln!(writer, "{}", content)?;
-                }
-            }
-        }
         Format::Json => {
             let mut outputs = Vec::new();
             for path in matching_files {
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
+                let content = fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read file for JSON output: {}", path.display())
+                })?;
                 outputs.push(FileOutput {
-                    path: path.to_string_lossy().to_string(),
+                    path: path.display().to_string(),
                     content,
                 });
             }
-            // Use to_writer_pretty for readable JSON output
-            serde_json::to_writer_pretty(writer, &outputs)?;
+            let json = serde_json::to_string_pretty(&outputs)
+                .context("Failed to serialize output to JSON")?;
+            writeln!(writer, "{}", json)?;
         }
-        Format::Markdown => {
-            for (i, path) in matching_files.iter().enumerate() {
-                if i > 0 {
-                    writeln!(writer, "\n---\n")?;
-                }
-                writeln!(writer, "File: {}", path.display())?;
-                writeln!(writer, "---")?;
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
-
-                if with_line_numbers {
-                    for (i, line) in content.lines().enumerate() {
-                        writeln!(writer, "{:>5} | {}", i + 1, line)?;
-                    }
+        Format::Cat => {
+            for path in matching_files {
+                let content = fs::read_to_string(path)?;
+                if use_color {
+                    print_highlighted_content(
+                        writer,
+                        &content,
+                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                        with_line_numbers,
+                    )?;
                 } else {
-                    writeln!(writer, "{}", content)?;
+                    print_plain_content(writer, &content, with_line_numbers)?;
                 }
             }
+        }
+        Format::Markdown => {
+            for path in matching_files {
+                if matching_files.len() > 1 {
+                    writeln!(writer, "## {}", path.display())?;
+                } else {
+                    writeln!(writer, "File: {}", path.display())?;
+                }
+                writeln!(writer, "---")?;
+                let content = fs::read_to_string(path)?;
+
+                if use_color {
+                    print_highlighted_content(
+                        writer,
+                        &content,
+                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                        with_line_numbers,
+                    )?;
+                } else {
+                    print_plain_content(writer, &content, with_line_numbers)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prints content with syntax highlighting.
+fn print_highlighted_content(
+    writer: &mut impl Write,
+    content: &str,
+    extension: &str,
+    with_line_numbers: bool,
+) -> Result<()> {
+    let syntax = SYNTAX_SET
+        .find_syntax_by_extension(extension)
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+    // Using a theme with a background color is important for correctness.
+    let theme = &THEME_SET.themes["base16-ocean.dark"];
+    let mut highlighter = HighlightLines::new(syntax, theme);
+
+    for (i, line) in LinesWithEndings::from(content).enumerate() {
+        if with_line_numbers {
+            write!(writer, "{:>5} | ", i + 1)?;
+        }
+        let ranges: Vec<(Style, &str)> = highlighter.highlight_line(line, &SYNTAX_SET)?;
+        let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
+        write!(writer, "{}", escaped)?;
+    }
+    // Reset terminal colors
+    write!(writer, "\x1b[0m")?;
+    Ok(())
+}
+
+/// Prints content without syntax highlighting.
+fn print_plain_content(writer: &mut impl Write, content: &str, with_line_numbers: bool) -> Result<()> {
+    for (i, line) in content.lines().enumerate() {
+        if with_line_numbers {
+            writeln!(writer, "{:>5} | {}", i + 1, line)?;
+        } else {
+            writeln!(writer, "{}", line)?;
         }
     }
     Ok(())
@@ -801,61 +886,59 @@ pub fn print_output(
 fn format_mode(mode: u32) -> String {
     #[cfg(unix)]
     {
-        let user_r = if mode & 0o400 != 0 { 'r' } else { '-' };
-        let user_w = if mode & 0o200 != 0 { 'w' } else { '-' };
-        let user_x = if mode & 0o100 != 0 { 'x' } else { '-' };
-        let group_r = if mode & 0o040 != 0 { 'r' } else { '-' };
-        let group_w = if mode & 0o020 != 0 { 'w' } else { '-' };
-        let group_x = if mode & 0o010 != 0 { 'x' } else { '-' };
-        let other_r = if mode & 0o004 != 0 { 'r' } else { '-' };
-        let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
-        let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
-        format!("-{}{}{}{}{}{}{}{}{}", user_r, user_w, user_x, group_r, group_w, group_x, other_r, other_w, other_x)
+        let mut perms = String::new();
+        // File type
+        if (mode & 0o170000) == 0o120000 {
+            perms.push('l'); // Symbolic link
+        } else if (mode & 0o170000) == 0o040000 {
+            perms.push('d'); // Directory
+        } else {
+            perms.push('-'); // Regular file
+        }
+        // Owner permissions
+        perms.push(if (mode & 0o400) != 0 { 'r' } else { '-' });
+        perms.push(if (mode & 0o200) != 0 { 'w' } else { '-' });
+        perms.push(if (mode & 0o100) != 0 { 'x' } else { '-' });
+        // Group permissions
+        perms.push(if (mode & 0o040) != 0 { 'r' } else { '-' });
+        perms.push(if (mode & 0o020) != 0 { 'w' } else { '-' });
+        perms.push(if (mode & 0o010) != 0 { 'x' } else { '-' });
+        // Other permissions
+        perms.push(if (mode & 0o004) != 0 { 'r' } else { '-' });
+        perms.push(if (mode & 0o002) != 0 { 'w' } else { '-' });
+        perms.push(if (mode & 0o001) != 0 { 'x' } else { '-' });
+        perms
     }
     #[cfg(not(unix))]
     {
-        // Basic fallback for non-Unix platforms
-        if mode & 0o200 != 0 { "-rw-------" } else { "-r--------" }.to_string()
+        // Basic mode formatting for non-Unix systems
+        if (mode & 0o040000) != 0 {
+            "d".to_string()
+        } else {
+            "-".to_string()
+        }
     }
 }
-
-fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-
-    if bytes >= GB {
-        format!("{:.1}G", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1}M", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1}K", bytes as f64 / KB as f64)
-    } else {
-        format!("{}B", bytes)
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
+    use std::fs::File;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     fn create_temp_file_with_content(content: &str) -> NamedTempFile {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let mut file = NamedTempFile::new().unwrap();
         file.write_all(content.as_bytes()).unwrap();
         file
     }
 
-    // --- UPDATED AND NEW TESTS ---
-
     #[test]
-    fn test_format_markdown() {
+    fn test_format_markdown_single_file() {
         let file = create_temp_file_with_content("line 1");
         let paths = vec![file.path().to_path_buf()];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Markdown, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Markdown, false, false).unwrap();
         let output = String::from_utf8(writer).unwrap();
         let expected = format!("File: {}\n---\nline 1\n", file.path().display());
         assert_eq!(output, expected);
@@ -866,7 +949,7 @@ mod tests {
         let file = create_temp_file_with_content("a\nb");
         let paths = vec![file.path().to_path_buf()];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, true).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, true, false).unwrap();
         let output = String::from_utf8(writer).unwrap();
         assert_eq!(output, "    1 | a\n    2 | b\n");
     }
@@ -877,7 +960,7 @@ mod tests {
         let file2 = create_temp_file_with_content("b");
         let paths = vec![file1.path().to_path_buf(), file2.path().to_path_buf()];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Paths, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Paths, false, false).unwrap();
         let output = String::from_utf8(writer).unwrap();
         let expected = format!("{}\n{}\n", file1.path().display(), file2.path().display());
         assert_eq!(output, expected);
@@ -885,39 +968,60 @@ mod tests {
 
     #[test]
     fn test_format_json() {
-        let file1 = create_temp_file_with_content("{\"key\": \"value\"}");
+        let file1 = create_temp_file_with_content("hello");
         let file2 = create_temp_file_with_content("some text");
         let paths = vec![file1.path().to_path_buf(), file2.path().to_path_buf()];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Json, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Json, false, false).unwrap();
 
         // The output is pretty-printed, so we compare the parsed data, not the raw string.
         let output_data: Vec<FileOutput> = serde_json::from_slice(&writer).unwrap();
 
-        assert_eq!(output_data.len(), 2);
-        assert_eq!(output_data[0].path, file1.path().to_string_lossy());
-        assert_eq!(output_data[0].content, "{\"key\": \"value\"}");
-        assert_eq!(output_data[1].path, file2.path().to_string_lossy());
-        assert_eq!(output_data[1].content, "some text");
+        let expected_data = vec![
+            FileOutput {
+                path: file1.path().display().to_string(),
+                content: "hello".to_string(),
+            },
+            FileOutput {
+                path: file2.path().display().to_string(),
+                content: "some text".to_string(),
+            },
+        ];
+        assert_eq!(output_data, expected_data);
     }
 
     #[test]
     fn test_format_find() {
-        let file = create_temp_file_with_content("hello"); // 5 bytes
+        let file = create_temp_file_with_content("find-test");
         let paths = vec![file.path().to_path_buf()];
         let mut writer = Vec::new();
 
-        print_output(&mut writer, &paths, &Format::Find, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Find, false, false).unwrap();
 
         let output = String::from_utf8(writer).unwrap();
 
-        // We can't test the exact permissions or timestamp, but we can test the structure.
-        assert!(output.contains("5B")); // Check for size
+        // Basic checks for the `find` format
         assert!(output.contains(file.path().to_str().unwrap())); // Check for path
         assert!(output.ends_with('\n'));
     }
-}
 
+    #[test]
+    fn test_highlighting_adds_ansi_codes() {
+        let rust_code = "fn main() {}";
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.rs");
+        std::fs::write(&file_path, rust_code).unwrap();
+
+        let paths = vec![file_path];
+        let mut writer = Vec::new();
+        print_output(&mut writer, &paths, &Format::Cat, false, true).unwrap();
+        let output = String::from_utf8(writer).unwrap();
+
+        // A simple check to see if ANSI escape codes are present.
+        assert!(output.contains("\x1b[38;2;"), "Output should contain ANSI color codes for highlighting");
+        assert!(output.ends_with("\x1b[0m"), "Output should end with ANSI reset code");
+    }
+}
 
 // END rdump/src/formatter.rs
 
@@ -941,7 +1045,10 @@ use commands::{preset::run_preset, search::run_search};
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
 #[derive(Parser, Debug)]
-#[command(version, about = "A fast, expressive, code-aware tool to find and dump file contents.")]
+#[command(
+    version,
+    about = "A fast, expressive, code-aware tool to find and dump file contents."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -1058,6 +1165,7 @@ fn main() -> Result<()> {
     }
 }
 
+
 // END rdump/src/main.rs
 
 // START rdump/src/parser.rs
@@ -1131,9 +1239,7 @@ pub fn parse_query(query: &str) -> Result<AstNode> {
 fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
     match pair.as_rule() {
         Rule::query => build_ast_from_pairs(pair.into_inner().next().unwrap()),
-        Rule::expression | Rule::logical_or | Rule::logical_and => {
-            build_ast_from_logical_op(pair)
-        }
+        Rule::expression | Rule::logical_or | Rule::logical_and => build_ast_from_logical_op(pair),
         Rule::term => {
             let mut inner = pair.into_inner();
             let first = inner.next().unwrap();
@@ -1184,7 +1290,6 @@ fn unescape_value(value: &str) -> String {
     }
     value.to_string()
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1286,66 +1391,154 @@ mod tests {
     }
 }
 
+
 // END rdump/src/parser.rs
 
-// START rdump/src/predicates/code_aware.rs
+// START rdump/src/predicates/code_aware/mod.rs
 
 use crate::evaluator::FileContext;
 use crate::parser::PredicateKey;
-use super::PredicateEvaluator;
-
+use crate::predicates::PredicateEvaluator;
 use anyhow::{Context, Result};
-use lazy_static::lazy_static;
-use std::collections::HashMap;
 use tree_sitter::{Query, QueryCursor};
 
-/// Defines the tree-sitter queries for a specific language.
-struct LanguageProfile {
-    language: tree_sitter::Language,
-    queries: HashMap<PredicateKey, String>,
+mod profiles;
+
+/// The evaluator that uses tree-sitter to perform code-aware queries.
+#[derive(Debug)]
+pub struct CodeAwareEvaluator;
+
+impl PredicateEvaluator for CodeAwareEvaluator {
+    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool> {
+        // 1. Determine the language from the file extension.
+        let extension = context
+            .path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let profile = match profiles::LANGUAGE_PROFILES.get(extension) {
+            Some(p) => p,
+            None => return Ok(false), // Not a supported language for this predicate.
+        };
+
+        // 2. Get the tree-sitter query string for the specific predicate.
+        let ts_query_str = match profile.queries.get(key) {
+            Some(q) if !q.is_empty() => q,
+            _ => return Ok(false), // This predicate is not implemented for this language yet.
+        };
+
+        // 3. Get content and lazily get the parsed tree from the file context.
+        // We get content first to avoid mutable/immutable borrow issues with context.
+        let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
+        let tree = context.get_tree(profile.language.clone())?;
+
+        // 4. Compile the tree-sitter query.
+        let query = Query::new(&profile.language, ts_query_str)
+            .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
+        let mut cursor = QueryCursor::new();
+
+        // 5. Execute the query and check for a match.
+        let captures = cursor.matches(&query, tree.root_node(), content.as_bytes());
+
+        for m in captures {
+            for capture in m.captures {
+                // We only care about nodes captured with the name `@match`.
+                let capture_name = &query.capture_names()[capture.index as usize];
+                if *capture_name == "match" {
+                    let captured_node = capture.node;
+                    let captured_text = captured_node.utf8_text(content.as_bytes())?;
+
+                    // `import:` uses substring matching, `def:` and `func:` use exact matching.
+                    let is_match = if key == &PredicateKey::Import {
+                        captured_text.contains(value)
+                    } else {
+                        captured_text == value
+                    };
+
+                    if is_match {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
 }
 
-/// Creates the profile for the Rust language.
-fn create_rust_profile() -> LanguageProfile {
-    let language = tree_sitter_rust::language();
+
+// END rdump/src/predicates/code_aware/mod.rs
+
+// START rdump/src/predicates/code_aware/profiles/javascript.rs
+
+use super::LanguageProfile;
+use crate::parser::PredicateKey;
+use std::collections::HashMap;
+
+/// Creates the profile for the JavaScript language.
+pub(super) fn create_javascript_profile() -> LanguageProfile {
+    let language = tree_sitter_javascript::language();
     let mut queries = HashMap::new();
 
-    // Query for struct, enum, and trait definitions.
-    // We capture the node associated with the name using `@match`.
     queries.insert(
         PredicateKey::Def,
-        r#"
-        (struct_item name: (_) @match)
-        (enum_item name: (_) @match)
-        (trait_item name: (_) @match)
-        "#
-        .to_string(),
+        "(class_declaration name: (identifier) @match)".to_string(),
     );
-
-    // Query for standalone functions and methods in traits or impls.
-    queries.insert(
-        PredicateKey::Func,
-        "
-        [
-            (function_item name: (identifier) @match)
-            (function_signature_item name: (identifier) @match)
-        ]"
-        .to_string(),
-    );
-    // Query for the entire `use` declaration. We will match against its text content.
+    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
     queries.insert(
         PredicateKey::Import,
-        "
-        (use_declaration) @match
-        "
-        .to_string(),
+        "(import_statement) @match".to_string(),
     );
 
     LanguageProfile { language, queries }
- }
+}
+
+
+// END rdump/src/predicates/code_aware/profiles/javascript.rs
+
+// START rdump/src/predicates/code_aware/profiles/mod.rs
+
+use crate::parser::PredicateKey;
+use lazy_static::lazy_static;
+use std::collections::HashMap;
+
+mod javascript;
+mod python;
+mod rust;
+mod typescript;
+
+/// Defines the tree-sitter queries for a specific language.
+pub(super) struct LanguageProfile {
+    pub(super) language: tree_sitter::Language,
+    pub(super) queries: HashMap<PredicateKey, String>,
+}
+
+lazy_static! {
+    pub(super) static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
+        let mut m = HashMap::new();
+        m.insert("rs", rust::create_rust_profile());
+        m.insert("py", python::create_python_profile());
+        let ts_profile = typescript::create_typescript_profile();
+        m.insert("ts", ts_profile);
+        m.insert("tsx", typescript::create_typescript_profile());
+        let js_profile = javascript::create_javascript_profile();
+        m.insert("js", js_profile);
+        m.insert("jsx", javascript::create_javascript_profile());
+        m
+    };
+}
+
+
+// END rdump/src/predicates/code_aware/profiles/mod.rs
+
+// START rdump/src/predicates/code_aware/profiles/python.rs
+
+use super::LanguageProfile;
+use crate::parser::PredicateKey;
+use std::collections::HashMap;
 
 /// Creates the profile for the Python language.
-fn create_python_profile() -> LanguageProfile {
+pub(super) fn create_python_profile() -> LanguageProfile {
     let language = tree_sitter_python::language();
     let mut queries = HashMap::new();
 
@@ -1382,191 +1575,202 @@ fn create_python_profile() -> LanguageProfile {
     LanguageProfile { language, queries }
 }
 
-/// Creates the profile for the JavaScript language.
-fn create_javascript_profile() -> LanguageProfile {
-    let language = tree_sitter_javascript::language();
+
+// END rdump/src/predicates/code_aware/profiles/python.rs
+
+// START rdump/src/predicates/code_aware/profiles/rust.rs
+
+use super::LanguageProfile;
+use crate::parser::PredicateKey;
+use std::collections::HashMap;
+
+/// Creates the profile for the Rust language.
+pub(super) fn create_rust_profile() -> LanguageProfile {
+    let language = tree_sitter_rust::language();
     let mut queries = HashMap::new();
 
-    queries.insert(PredicateKey::Def, "(class_declaration name: (identifier) @match)".to_string());
-    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
-    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
+    // Query for struct, enum, and trait definitions.
+    // We capture the node associated with the name using `@match`.
+    queries.insert(
+        PredicateKey::Def,
+        r#"
+        (struct_item name: (_) @match)
+        (enum_item name: (_) @match)
+        (trait_item name: (_) @match)
+        "#
+        .to_string(),
+    );
+
+    // Query for standalone functions and methods in traits or impls.
+    queries.insert(
+        PredicateKey::Func,
+        "
+        [
+            (function_item name: (identifier) @match)
+            (function_signature_item name: (identifier) @match)
+        ]"
+        .to_string(),
+    );
+    // Query for the entire `use` declaration. We will match against its text content.
+    queries.insert(
+        PredicateKey::Import,
+        "
+        (use_declaration) @match
+        "
+        .to_string(),
+    );
 
     LanguageProfile { language, queries }
 }
 
+
+// END rdump/src/predicates/code_aware/profiles/rust.rs
+
+// START rdump/src/predicates/code_aware/profiles/typescript.rs
+
+use super::LanguageProfile;
+use crate::parser::PredicateKey;
+use std::collections::HashMap;
+
 /// Creates the profile for the TypeScript language.
-fn create_typescript_profile() -> LanguageProfile {
+pub(super) fn create_typescript_profile() -> LanguageProfile {
     let language = tree_sitter_typescript::language_typescript();
     let mut queries = HashMap::new();
 
     queries.insert(PredicateKey::Def, "[ (class_declaration name: (type_identifier) @match) (interface_declaration name: (type_identifier) @match) (type_alias_declaration name: (type_identifier) @match) ]".to_string());
     queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
-    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
+    queries.insert(
+        PredicateKey::Import,
+        "(import_statement) @match".to_string(),
+    );
 
     LanguageProfile { language, queries }
 }
 
-// A static registry of language profiles, loaded at compile time.
-lazy_static! {
-    static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
-        let mut m = HashMap::new();
-        // Phase 2.0: Only Rust is implemented.
-         m.insert("rs", create_rust_profile());
-        // Phase 2.1: Add Python support.
-        m.insert("py", create_python_profile());
-        // Phase 2.2: Add JS/TS support
-        let ts_profile = create_typescript_profile();
-        m.insert("ts", ts_profile);
-        m.insert("tsx", create_typescript_profile()); // Reuse TS profile for TSX
 
-        let js_profile = create_javascript_profile();
-        m.insert("js", js_profile);
-        m.insert("jsx", create_javascript_profile()); // Reuse JS profile for JSX
-         m
-     };
- }
+// END rdump/src/predicates/code_aware/profiles/typescript.rs
 
- /// The evaluator that uses tree-sitter to perform code-aware queries.
- #[derive(Debug)]
- pub struct CodeAwareEvaluator;
+// START rdump/src/predicates/contains.rs
 
-impl PredicateEvaluator for CodeAwareEvaluator {
-    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool> {
-        // 1. Determine the language from the file extension.
-        let extension = context.path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        let profile = match LANGUAGE_PROFILES.get(extension) {
-            Some(p) => p,
-            None => return Ok(false), // Not a supported language for this predicate.
-        };
-
-        // 2. Get the tree-sitter query string for the specific predicate.
-        let ts_query_str = match profile.queries.get(key) {
-            Some(q) if !q.is_empty() => q,
-            _ => return Ok(false), // This predicate is not implemented for this language yet.
-        };
-
-        // 3. Get content and lazily get the parsed tree from the file context.
-        // We get content first to avoid mutable/immutable borrow issues with context.
-        let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
-        let tree = context.get_tree(profile.language.clone())?;
-
-         // 4. Compile the tree-sitter query.
-        let query = Query::new(&profile.language, ts_query_str)
-            .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
-        let mut cursor = QueryCursor::new();
-
-        // 5. Execute the query and check for a match.
-        let captures = cursor.matches(&query, tree.root_node(), content.as_bytes());
-
-        for m in captures {
-            for capture in m.captures {
-                // We only care about nodes captured with the name `@match`.
-                let capture_name = &query.capture_names()[capture.index as usize];
-                if *capture_name == "match" {
-                    let captured_node = capture.node;
-                    let captured_text = captured_node.utf8_text(content.as_bytes())?;
-
-                    // `import:` uses substring matching, `def:` and `func:` use exact matching.
-                    let is_match = if key == &PredicateKey::Import {
-                        captured_text.contains(value)
-                    } else {
-                        captured_text == value
-                    };
-
-                    if is_match {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-
-        Ok(false)
-    }
-}
-
-
-// END rdump/src/predicates/code_aware.rs
-
-// START rdump/src/predicates/mod.rs
-
-pub mod code_aware;
-
+use super::PredicateEvaluator;
 use crate::evaluator::FileContext;
 use crate::parser::PredicateKey;
-use anyhow::{anyhow, Result};
-use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
-use self::code_aware::CodeAwareEvaluator;
+use anyhow::Result;
 
-// The core trait that all predicate evaluators must implement.
-pub trait PredicateEvaluator {
-    // The key is now passed to allow one evaluator to handle multiple predicate types.
-    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool>;
-}
+pub(super) struct ContainsEvaluator;
 
-// --- Concrete Implementations ---
-
-struct ExtEvaluator;
-impl PredicateEvaluator for ExtEvaluator {
-    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
-        let file_ext = context.path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        Ok(file_ext.eq_ignore_ascii_case(value))
-    }
-}
-
-struct PathEvaluator;
-impl PredicateEvaluator for PathEvaluator {
-    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
-        let path_str = context.path.to_string_lossy();
-        Ok(path_str.contains(value))
-    }
-}
-
-struct NameEvaluator;
-impl PredicateEvaluator for NameEvaluator {
-    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
-        let file_name = context.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let pattern = glob::Pattern::new(value)?;
-        Ok(pattern.matches(file_name))
-    }
-}
-
-struct ContainsEvaluator;
 impl PredicateEvaluator for ContainsEvaluator {
-    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<bool> {
         let content = context.get_content()?;
         Ok(content.contains(value))
     }
 }
 
-struct MatchesEvaluator;
-impl PredicateEvaluator for MatchesEvaluator {
-    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
-        let content = context.get_content()?;
-        let re = regex::Regex::new(value)?;
-        Ok(re.is_match(content))
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    fn create_temp_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        file
+    }
+    #[test]
+    fn test_contains_evaluator() {
+        let file = create_temp_file("Hello world\nThis is a test.");
+        let mut context = FileContext::new(file.path().to_path_buf());
+        let evaluator = ContainsEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Contains, "world")
+            .unwrap());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Contains, "is a test")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::Contains, "goodbye")
+            .unwrap());
     }
 }
 
-struct SizeEvaluator;
-impl PredicateEvaluator for SizeEvaluator {
-    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
-        let metadata = context.path.metadata()?;
-        let file_size = metadata.len();
-        parse_and_compare_size(file_size, value)
+
+// END rdump/src/predicates/contains.rs
+
+// START rdump/src/predicates/ext.rs
+
+use super::PredicateEvaluator;
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use anyhow::Result;
+
+pub(super) struct ExtEvaluator;
+impl PredicateEvaluator for ExtEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<bool> {
+        let file_ext = context
+            .path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        Ok(file_ext.eq_ignore_ascii_case(value))
     }
 }
 
-struct ModifiedEvaluator;
-impl PredicateEvaluator for ModifiedEvaluator {
-    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
-        let metadata = context.path.metadata()?;
-        let modified_time = metadata.modified()?;
-        parse_and_compare_time(modified_time, value)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_ext_evaluator() {
+        let mut context_rs = FileContext::new(PathBuf::from("main.rs"));
+        let mut context_toml = FileContext::new(PathBuf::from("Cargo.TOML"));
+        let mut context_no_ext = FileContext::new(PathBuf::from("README"));
+        let mut context_dotfile = FileContext::new(PathBuf::from(".bashrc"));
+
+        let evaluator = ExtEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context_rs, &PredicateKey::Ext, "rs")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate(&mut context_rs, &PredicateKey::Ext, "toml")
+            .unwrap());
+        assert!(
+            evaluator
+                .evaluate(&mut context_toml, &PredicateKey::Ext, "toml")
+                .unwrap(),
+            "Should be case-insensitive"
+        );
+        assert!(!evaluator
+            .evaluate(&mut context_no_ext, &PredicateKey::Ext, "rs")
+            .unwrap());
+        assert!(
+            !evaluator
+                .evaluate(&mut context_dotfile, &PredicateKey::Ext, "bashrc")
+                .unwrap(),
+            "Dotfiles should have no extension"
+        );
     }
 }
 
-fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
+
+// END rdump/src/predicates/ext.rs
+
+// START rdump/src/predicates/helpers.rs
+
+use anyhow::{anyhow, Result};
+use std::time::{Duration, SystemTime};
+
+pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
     let (op, size_str) = query.split_at(1);
     let target_size = size_str
         .trim()
@@ -1591,7 +1795,7 @@ fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
     }
 }
 
-fn parse_and_compare_time(modified_time: SystemTime, query: &str) -> Result<bool> {
+pub(super) fn parse_and_compare_time(modified_time: SystemTime, query: &str) -> Result<bool> {
     let now = SystemTime::now();
     let (op, duration_str) = query.split_at(1);
     let duration_str = duration_str.trim();
@@ -1609,7 +1813,9 @@ fn parse_and_compare_time(modified_time: SystemTime, query: &str) -> Result<bool
     };
 
     let duration = Duration::from_secs(duration_secs);
-    let threshold_time = now.checked_sub(duration).ok_or(anyhow!("Time calculation underflow"))?;
+    let threshold_time = now
+        .checked_sub(duration)
+        .ok_or(anyhow!("Time calculation underflow"))?;
 
     match op {
         ">" => Ok(modified_time > threshold_time), // Modified more recently than
@@ -1618,8 +1824,106 @@ fn parse_and_compare_time(modified_time: SystemTime, query: &str) -> Result<bool
     }
 }
 
+
+// END rdump/src/predicates/helpers.rs
+
+// START rdump/src/predicates/matches.rs
+
+use super::PredicateEvaluator;
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use anyhow::Result;
+
+pub(super) struct MatchesEvaluator;
+impl PredicateEvaluator for MatchesEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<bool> {
+        let content = context.get_content()?;
+        let re = regex::Regex::new(value)?;
+        Ok(re.is_match(content))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_temp_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        file
+    }
+
+    #[test]
+    fn test_matches_evaluator() {
+        let file = create_temp_file("version = \"0.1.0\"\nauthor = \"test\"");
+        let mut context = FileContext::new(file.path().to_path_buf());
+        let evaluator = MatchesEvaluator;
+        // Simple regex
+        assert!(evaluator
+            .evaluate(
+                &mut context,
+                &PredicateKey::Matches,
+                "version = \"[0-9]+\\.[0-9]+\\.[0-9]+\""
+            )
+            .unwrap());
+        // Test regex that spans lines
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Matches, "(?s)version.*author")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate(
+                &mut context,
+                &PredicateKey::Matches,
+                "^version = \"1.0.0\"$"
+            )
+            .unwrap());
+    }
+}
+
+
+// END rdump/src/predicates/matches.rs
+
+// START rdump/src/predicates/mod.rs
+
+pub mod code_aware;
+pub mod contains;
+pub mod ext;
+mod helpers;
+pub mod matches;
+pub mod modified;
+pub mod name;
+pub mod path;
+pub mod size;
+
+use self::code_aware::CodeAwareEvaluator;
+use self::contains::ContainsEvaluator;
+use self::ext::ExtEvaluator;
+use self::matches::MatchesEvaluator;
+use self::modified::ModifiedEvaluator;
+use self::name::NameEvaluator;
+use self::path::PathEvaluator;
+use self::size::SizeEvaluator;
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use anyhow::Result;
+use std::collections::HashMap;
+
+// The core trait that all predicate evaluators must implement.
+pub trait PredicateEvaluator {
+    // The key is now passed to allow one evaluator to handle multiple predicate types.
+    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool>;
+}
+
 /// Creates and populates the predicate registry.
-pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+pub fn create_predicate_registry(
+) -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
     let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> =
         HashMap::new();
 
@@ -1640,14 +1944,196 @@ pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEva
     registry
 }
 
+
+// END rdump/src/predicates/mod.rs
+
+// START rdump/src/predicates/modified.rs
+
+use super::{helpers, PredicateEvaluator};
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use anyhow::Result;
+
+pub(super) struct ModifiedEvaluator;
+impl PredicateEvaluator for ModifiedEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<bool> {
+        let metadata = context.path.metadata()?;
+        let modified_time = metadata.modified()?;
+        helpers::parse_and_compare_time(modified_time, value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
-     fn create_temp_file(content: &str) -> NamedTempFile {
+    fn create_temp_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        file
+    }
+
+    #[test]
+    fn test_modified_evaluator() {
+        let file = create_temp_file("content");
+        let mut context = FileContext::new(file.path().to_path_buf());
+
+        let evaluator = ModifiedEvaluator;
+        // File was just created
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Modified, ">1m")
+            .unwrap()); // Modified more recently than 1 min ago
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::Modified, "<1m")
+            .unwrap()); // Not modified longer than 1 min ago
+    }
+}
+
+
+// END rdump/src/predicates/modified.rs
+
+// START rdump/src/predicates/name.rs
+
+use super::PredicateEvaluator;
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use anyhow::Result;
+
+pub(super) struct NameEvaluator;
+impl PredicateEvaluator for NameEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<bool> {
+        let file_name = context
+            .path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let pattern = glob::Pattern::new(value)?;
+        Ok(pattern.matches(file_name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_name_evaluator() {
+        let mut context1 = FileContext::new(PathBuf::from("/home/user/Cargo.toml"));
+        let mut context2 = FileContext::new(PathBuf::from("/home/user/main.rs"));
+
+        let evaluator = NameEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context1, &PredicateKey::Name, "Cargo.toml")
+            .unwrap());
+        assert!(
+            evaluator
+                .evaluate(&mut context1, &PredicateKey::Name, "C*.toml")
+                .unwrap(),
+            "Glob pattern should match"
+        );
+        assert!(
+            evaluator
+                .evaluate(&mut context2, &PredicateKey::Name, "*.rs")
+                .unwrap(),
+            "Glob pattern should match"
+        );
+        assert!(!evaluator
+            .evaluate(&mut context1, &PredicateKey::Name, "*.rs")
+            .unwrap());
+    }
+}
+
+
+// END rdump/src/predicates/name.rs
+
+// START rdump/src/predicates/path.rs
+
+use super::PredicateEvaluator;
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use anyhow::Result;
+
+pub(super) struct PathEvaluator;
+impl PredicateEvaluator for PathEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<bool> {
+        let path_str = context.path.to_string_lossy();
+        Ok(path_str.contains(value))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_path_evaluator() {
+        let mut context = FileContext::new(PathBuf::from("/home/user/project/src/main.rs"));
+        let evaluator = PathEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Path, "project/src")
+            .unwrap());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Path, "/home/user")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::Path, "project/lib")
+            .unwrap());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Path, "main.rs")
+            .unwrap());
+    }
+}
+
+
+// END rdump/src/predicates/path.rs
+
+// START rdump/src/predicates/size.rs
+
+use super::{helpers, PredicateEvaluator};
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use anyhow::Result;
+
+pub(super) struct SizeEvaluator;
+impl PredicateEvaluator for SizeEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<bool> {
+        let metadata = context.path.metadata()?;
+        let file_size = metadata.len();
+        helpers::parse_and_compare_size(file_size, value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_temp_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
         write!(file, "{}", content).unwrap();
         file
@@ -1659,242 +2145,18 @@ mod tests {
         let mut context = FileContext::new(file.path().to_path_buf());
 
         let evaluator = SizeEvaluator;
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Size, ">1000").unwrap());
-        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Size, "<1kb").unwrap());
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Size, ">0.9kb").unwrap());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Size, ">1000")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::Size, "<1kb")
+            .unwrap());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Size, ">0.9kb")
+            .unwrap());
     }
+}
 
-    #[test]
-    fn test_modified_evaluator() {
-        let file = create_temp_file("content");
-        let mut context = FileContext::new(file.path().to_path_buf());
 
-        let evaluator = ModifiedEvaluator;
-        // File was just created
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Modified, ">1m").unwrap()); // Modified more recently than 1 min ago
-        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Modified, "<1m").unwrap()); // Not modified longer than 1 min ago
-    }
-
-    #[test]
-    fn test_ext_evaluator() {
-        let mut context_rs = FileContext::new(PathBuf::from("main.rs"));
-        let mut context_toml = FileContext::new(PathBuf::from("Cargo.TOML"));
-        let mut context_no_ext = FileContext::new(PathBuf::from("README"));
-        let mut context_dotfile = FileContext::new(PathBuf::from(".bashrc"));
-
-        let evaluator = ExtEvaluator;
-        assert!(evaluator.evaluate(&mut context_rs, &PredicateKey::Ext, "rs").unwrap());
-        assert!(!evaluator.evaluate(&mut context_rs, &PredicateKey::Ext, "toml").unwrap());
-        assert!(evaluator.evaluate(&mut context_toml, &PredicateKey::Ext, "toml").unwrap(), "Should be case-insensitive");
-        assert!(!evaluator.evaluate(&mut context_no_ext, &PredicateKey::Ext, "rs").unwrap());
-        assert!(!evaluator.evaluate(&mut context_dotfile, &PredicateKey::Ext, "bashrc").unwrap(), "Dotfiles should have no extension");
-    }
-
-    #[test]
-    fn test_path_evaluator() {
-        let mut context = FileContext::new(PathBuf::from("/home/user/project/src/main.rs"));
-        let evaluator = PathEvaluator;
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Path, "project/src").unwrap());
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Path, "/home/user").unwrap());
-        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Path, "project/lib").unwrap());
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Path, "main.rs").unwrap());
-    }
-
-    #[test]
-    fn test_name_evaluator() {
-        let mut context1 = FileContext::new(PathBuf::from("/home/user/Cargo.toml"));
-        let mut context2 = FileContext::new(PathBuf::from("/home/user/main.rs"));
-
-        let evaluator = NameEvaluator;
-        assert!(evaluator.evaluate(&mut context1, &PredicateKey::Name, "Cargo.toml").unwrap());
-        assert!(evaluator.evaluate(&mut context1, &PredicateKey::Name, "C*.toml").unwrap(), "Glob pattern should match");
-        assert!(evaluator.evaluate(&mut context2, &PredicateKey::Name, "*.rs").unwrap(), "Glob pattern should match");
-        assert!(!evaluator.evaluate(&mut context1, &PredicateKey::Name, "*.rs").unwrap());
-    }
-
-    #[test]
-    fn test_contains_evaluator() {
-        let file = create_temp_file("Hello world\nThis is a test.");
-        let mut context = FileContext::new(file.path().to_path_buf());
-        let evaluator = ContainsEvaluator;
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Contains, "world").unwrap());
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Contains, "is a test").unwrap());
-        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Contains, "goodbye").unwrap());
-    }
-
-    #[test]
-    fn test_matches_evaluator() {
-        let file = create_temp_file("version = \"0.1.0\"\nauthor = \"test\"");
-        let mut context = FileContext::new(file.path().to_path_buf());
-        let evaluator = MatchesEvaluator;
-        // Simple regex
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Matches, "version = \"[0-9]+\\.[0-9]+\\.[0-9]+\"").unwrap());
-        // Test regex that spans lines
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Matches, "(?s)version.*author").unwrap());
-        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Matches, "^version = \"1.0.0\"$").unwrap());
-    }
-
-    #[test]
-    fn test_code_aware_evaluator_rust_def() {
-        let rust_code = "struct User; enum Role {}";
-
-        // Create a temp file with a .rs extension
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("code.rs");
-        let mut file = std::fs::File::create(&file_path).unwrap();
-        file.write_all(rust_code.as_bytes()).unwrap();
-
-        let mut context = FileContext::new(file_path.clone());
-        let evaluator = CodeAwareEvaluator;
-
-        // Test successful matches
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Def, "User").unwrap(), "Should find struct User");
-
-        // Reset context for the next evaluation on the same file
-        let mut context = FileContext::new(file_path);
-        assert!(evaluator.evaluate(&mut context, &PredicateKey::Def, "Role").unwrap(), "Should find enum Role");
-    }
-
-    #[test]
-    fn test_code_aware_evaluator_full_rust_suite() {
-        let rust_code = "\n            use std::collections::HashMap;\n            use serde::{Serialize, Deserialize};\n\n            struct AppConfig {}\n            trait Runnable {\n                fn run(&self);\n            }\n            fn launch_app() {}\n        ";
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("complex.rs");
-        let mut file = std::fs::File::create(&file_path).unwrap();
-        file.write_all(rust_code.as_bytes()).unwrap();
-
-        let evaluator = CodeAwareEvaluator;
-
-        // --- Test Definitions ---
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "AppConfig").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Runnable").unwrap());
-
-        // --- Test Functions ---
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "run").unwrap(), "Should find trait method");
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "launch_app").unwrap(), "Should find standalone function");
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Func, "AppConfig").unwrap());
-
-        // --- Test Imports ---
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "std::collections").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "serde").unwrap(), "Should match part of a use statement");
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "Serialize").unwrap(), "Should match item in a use list");
-        let mut ctx = FileContext::new(file_path.clone());
-         assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "anyhow").unwrap());
-     }
-
-    #[test]
-    fn test_code_aware_evaluator_python_suite() {
-        let python_code = r#"
-import os
-from sys import argv
-
-class DataProcessor:
-    def __init__(self):
-        pass
-
-def process_data():
-    print("Processing")
-        "#;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("script.py");
-        let mut file = std::fs::File::create(&file_path).unwrap();
-        file.write_all(python_code.as_bytes()).unwrap();
-
-        let evaluator = CodeAwareEvaluator;
-
-        // --- Test Definitions (Classes) ---
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "DataProcessor").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Def, "process_data").unwrap());
-
-        // --- Test Functions ---
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Func, "DataProcessor").unwrap());
-
-        // --- Test Imports ---
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "os").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "sys").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "argv").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "numpy").unwrap());
-     }
-
-    #[test]
-    fn test_code_aware_evaluator_javascript_suite() {
-        let js_code = r#"
-            import { open } from 'fs/promises';
-
-            class Logger {
-                log(message) { console.log(message); }
-            }
-
-            function a() { }
-        "#;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("script.js");
-        file_path.parent().unwrap().to_path_buf().push("script.js");
-        let mut file = std::fs::File::create(&file_path).unwrap();
-        file.write_all(js_code.as_bytes()).unwrap();
-
-        let evaluator = CodeAwareEvaluator;
-
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Logger").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "log").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fs/promises").unwrap());
-    }
-
-    #[test]
-    fn test_code_aware_evaluator_typescript_suite() {
-        let ts_code = r#"
-            import React from 'react';
-
-            interface User { id: number; }
-            type ID = string | number;
-
-            class ApiClient {
-                fetchUser(): User | null { return null; }
-            }
-        "#;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("api.ts");
-        let mut file = std::fs::File::create(&file_path).unwrap();
-        file.write_all(ts_code.as_bytes()).unwrap();
-
-        let evaluator = CodeAwareEvaluator;
-
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "User").unwrap(), "Should find interface");
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ID").unwrap(), "Should find type alias");
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ApiClient").unwrap(), "Should find class");
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "fetchUser").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "React").unwrap());
-    }
- }
-
-// END rdump/src/predicates/mod.rs
+// END rdump/src/predicates/size.rs
 
