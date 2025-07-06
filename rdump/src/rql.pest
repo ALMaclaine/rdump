@@ -1,0 +1,42 @@
+// This defines the overall structure of a query
+query = { SOI ~ expression ~ EOI }
+
+// An expression is one or more terms joined by operators
+expression = { logical_or }
+
+// Define operator precedence: OR is lowest
+logical_or = { logical_and ~ (OR ~ logical_and)* }
+logical_and = { factor ~ (AND ~ factor)* }
+
+// A factor can be a negated factor, a grouped expression, or a simple predicate
+factor = { NOT? ~ (predicate | "(" ~ expression ~ ")") }
+
+// A predicate is our key:value pair
+predicate = { identifier ~ ":" ~ value }
+
+// Define the components
+identifier = @{ ASCII_ALPHANUMERIC+ }
+
+// --- CORRECTED VALUE RULES ---
+value = { quoted_value | unquoted_value }
+
+// An unquoted value cannot contain whitespace or operators
+unquoted_value = @{ (ASCII_ALPHANUMERIC | "." | "_" | "-")+ }
+
+// A quoted value captures everything between the quotes
+quoted_value = { single_quoted | double_quoted }
+single_quoted = @{ "'" ~ inner_single_quoted ~ "'" }
+double_quoted = @{ "\"" ~ inner_double_quoted ~ "\"" }
+
+// Define what can be inside the quotes (anything except the closing quote)
+inner_single_quoted = { (!"'" ~ ANY)* }
+inner_double_quoted = { (!"\"" ~ ANY)* }
+
+
+// Define operators
+AND = { "&" }
+OR = { "|" }
+NOT = { "!" }
+
+// Define whitespace, which we want to ignore between tokens
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }

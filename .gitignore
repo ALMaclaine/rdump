@@ -1,0 +1,18 @@
+# Rust build artifacts
+# Ignore the 'target' directory inside the 'rdump' subdirectory
+rdump/target/
+
+# Node.js dependencies
+# Ignore the 'node_modules' directory inside the 'rdump' subdirectory
+rdump/node_modules/
+
+# For a binary application, we often don't commit the lock file,
+# though this is a matter of preference.
+# Cargo.lock
+
+# Editor-specific configuration
+.idea/
+.vscode/
+
+# Other compiler-generated files
+*.d
