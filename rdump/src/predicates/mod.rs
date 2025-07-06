@@ -156,7 +156,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
-    fn create_temp_file(content: &str) -> NamedTempFile {
+     fn create_temp_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
         write!(file, "{}", content).unwrap();
         file
@@ -297,6 +297,50 @@ mod tests {
         let mut ctx = FileContext::new(file_path.clone());
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "Serialize").unwrap(), "Should match item in a use list");
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "anyhow").unwrap());
+         assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "anyhow").unwrap());
+     }
+
+    #[test]
+    fn test_code_aware_evaluator_python_suite() {
+        let python_code = r#"
+import os
+from sys import argv
+
+class DataProcessor:
+    def __init__(self):
+        pass
+
+def process_data():
+    print("Processing")
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("script.py");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(python_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        // --- Test Definitions (Classes) ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "DataProcessor").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Def, "process_data").unwrap());
+
+        // --- Test Functions ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Func, "DataProcessor").unwrap());
+
+        // --- Test Imports ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "os").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "sys").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "argv").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "numpy").unwrap());
     }
-}
+ }

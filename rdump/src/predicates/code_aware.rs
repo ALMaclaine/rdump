@@ -18,13 +18,12 @@ lazy_static! {
     static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
         let mut m = HashMap::new();
         // Phase 2.0: Only Rust is implemented.
-        m.insert("rs", create_rust_profile());
-        // In the future, we will add:
-        // m.insert("py", create_python_profile());
-        // m.insert("js", create_javascript_profile());
-        m
-    };
-}
+         m.insert("rs", create_rust_profile());
+        // Phase 2.1: Add Python support.
+        m.insert("py", create_python_profile());
+         m
+     };
+ }
 
 /// Creates the profile for the Rust language.
 fn create_rust_profile() -> LanguageProfile {
@@ -63,11 +62,49 @@ fn create_rust_profile() -> LanguageProfile {
     );
 
     LanguageProfile { language, queries }
+ }
+
+/// Creates the profile for the Python language.
+fn create_python_profile() -> LanguageProfile {
+    let language = tree_sitter_python::language();
+    let mut queries = HashMap::new();
+
+    // Query for class definitions.
+    queries.insert(
+        PredicateKey::Def,
+        "
+        (class_definition name: (identifier) @match)
+        "
+        .to_string(),
+    );
+
+    // Query for function definitions.
+    queries.insert(
+        PredicateKey::Func,
+        "
+        (function_definition name: (identifier) @match)
+        "
+        .to_string(),
+    );
+
+    // Query for `import` and `from ... import` statements.
+    queries.insert(
+        PredicateKey::Import,
+        "
+        [
+            (import_statement) @match
+            (import_from_statement) @match
+        ]
+        "
+        .to_string(),
+    );
+
+    LanguageProfile { language, queries }
 }
 
-/// The evaluator that uses tree-sitter to perform code-aware queries.
-#[derive(Debug)]
-pub struct CodeAwareEvaluator;
+ /// The evaluator that uses tree-sitter to perform code-aware queries.
+ #[derive(Debug)]
+ pub struct CodeAwareEvaluator;
 
 impl PredicateEvaluator for CodeAwareEvaluator {
     fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool> {
@@ -89,7 +126,7 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
         let tree = context.get_tree(profile.language.clone())?;
 
-        // 4. Compile the tree-sitter query.
+         // 4. Compile the tree-sitter query.
         let query = Query::new(&profile.language, ts_query_str)
             .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
         let mut cursor = QueryCursor::new();

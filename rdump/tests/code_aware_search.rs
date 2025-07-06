@@ -53,10 +53,25 @@ pub enum Role {
 
     let readme_md_content = "# Test Project\nThis is a README for Role and User structs.";
     let mut readme_md = fs::File::create(dir.path().join("README.md")).unwrap();
-    readme_md.write_all(readme_md_content.as_bytes()).unwrap();
+     readme_md.write_all(readme_md_content.as_bytes()).unwrap();
 
-    dir
-}
+    // --- NEW: Add a Python file ---
+    let py_content = r#"
+import os
+
+class Helper:
+    def __init__(self):
+        self.path = os.getcwd()
+
+def run_helper():
+    h = Helper()
+    return h.path
+"#;
+    let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
+    py_file.write_all(py_content.as_bytes()).unwrap();
+
+     dir
+ }
 
 #[test]
 fn test_def_finds_struct_in_correct_file() {
@@ -190,6 +205,51 @@ fn test_logical_or_across_files() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("src/main.rs"))
-        .stdout(predicate::str::contains("src/lib.rs"));
+         .stdout(predicate::str::contains("src/lib.rs"));
+ }
+
+#[test]
+fn test_def_finds_python_class() {
+    let dir = setup_test_project();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(dir.path());
+    cmd.arg("search").arg("def:Helper & ext:py");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("helper.py"))
+        .stdout(predicate::str::contains("class Helper:"))
+        .stdout(predicate::str::contains("src/main.rs").not());
+}
+
+#[test]
+fn test_func_finds_python_function() {
+    let dir = setup_test_project();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(dir.path());
+    cmd.arg("search").arg("func:run_helper");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("helper.py"))
+        .stdout(predicate::str::contains("def run_helper():"))
+        .stdout(predicate::str::contains("src/main.rs").not());
+}
+
+#[test]
+fn test_import_finds_python_import() {
+    let dir = setup_test_project();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(dir.path());
+    cmd.arg("search").arg("import:os & ext:py");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("helper.py"))
+        .stdout(predicate::str::contains("import os"))
+        .stdout(predicate::str::contains("src/lib.rs").not());
 }
 // END tests/code_aware_search.rs
