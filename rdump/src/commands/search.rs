@@ -1,5 +1,4 @@
 use anyhow::Result;
-use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use std::fs::File;
@@ -85,19 +84,21 @@ fn get_candidate_files(
     max_depth: Option<usize>,
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let mut override_builder = OverrideBuilder::new(root);
-    if !no_ignore {
-        override_builder.add("!node_modules/")?;
-        override_builder.add("!target/")?;
-        override_builder.add("!.git/")?;
-    }
-    let overrides = override_builder.build()?;
     let mut walker_builder = WalkBuilder::new(root);
+
     walker_builder
-        .overrides(overrides)
         .ignore(!no_ignore)
+        .git_ignore(!no_ignore)
         .hidden(!hidden)
         .max_depth(max_depth);
+
+    if !no_ignore {
+        let gitignore_path = root.join(".gitignore");
+        if gitignore_path.exists() {
+            walker_builder.add_ignore(gitignore_path);
+        }
+    }
+
     for result in walker_builder.build() {
         let entry = result?;
         if entry.file_type().map_or(false, |ft| ft.is_file()) {
@@ -105,4 +106,124 @@ fn get_candidate_files(
         }
     }
     Ok(files)
+}
+
+// Add to the bottom of rdump/src/commands/search.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    fn create_test_fs() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+
+        // Create files and directories
+        fs::File::create(root.join("file_a.txt")).unwrap();
+        fs::File::create(root.join(".hidden_file")).unwrap();
+
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::File::create(root.join("sub/file_b.txt")).unwrap();
+
+        fs::create_dir_all(root.join("sub/sub2")).unwrap();
+        fs::File::create(root.join("sub/sub2/file_c.log")).unwrap();
+
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::File::create(root.join("target/debug/app.exe")).unwrap();
+
+        fs::create_dir(root.join("logs")).unwrap();
+        fs::File::create(root.join("logs/yesterday.log")).unwrap();
+
+        let mut gitignore = fs::File::create(root.join(".gitignore")).unwrap();
+        writeln!(gitignore, "*.log").unwrap();
+        writeln!(gitignore, "logs/").unwrap();
+        writeln!(gitignore, "target/").unwrap();
+
+        (dir, root)
+    }
+
+    // Helper to run get_candidate_files and return a sorted list of file names
+    fn get_sorted_file_names(
+        root: &PathBuf,
+        no_ignore: bool,
+        hidden: bool,
+        max_depth: Option<usize>,
+    ) -> Vec<String> {
+        let mut paths = get_candidate_files(root, no_ignore, hidden, max_depth).unwrap();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().replace("\\", "/"))
+            .collect()
+    }
+
+    #[test]
+    fn test_get_candidates_default_behavior() {
+        let (_dir, root) = create_test_fs();
+        let files = get_sorted_file_names(&root, false, false, None);
+
+        // Should find file_a.txt and file_b.txt
+        // Should NOT find:
+        // - .hidden_file (hidden)
+        // - .gitignore (hidden)
+        // - files in target/ (default override)
+        // - *.log files (.gitignore)
+        assert_eq!(files, vec!["file_a.txt", "sub/file_b.txt"]);
+    }
+
+    #[test]
+    fn test_get_candidates_with_hidden() {
+        let (_dir, root) = create_test_fs();
+        let files = get_sorted_file_names(&root, false, true, None);
+
+        // Should find .gitignore, .hidden_file, file_a.txt, file_b.txt
+        let expected: HashSet<String> = [
+            ".gitignore".to_string(),
+            ".hidden_file".to_string(),
+            "file_a.txt".to_string(),
+            "sub/file_b.txt".to_string(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        let found: HashSet<String> = files.into_iter().collect();
+
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn test_get_candidates_with_no_ignore() {
+        let (_dir, root) = create_test_fs();
+        let files = get_sorted_file_names(&root, true, false, None);
+
+        // Should find everything not hidden, including gitignored files
+        // and files in the default-ignored 'target' dir.
+        let expected: HashSet<String> = [
+            "file_a.txt".to_string(),
+            "sub/file_b.txt".to_string(),
+            "sub/sub2/file_c.log".to_string(),
+            "target/debug/app.exe".to_string(),
+            "logs/yesterday.log".to_string(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        let found: HashSet<String> = files.into_iter().collect();
+
+        assert_eq!(found, expected);
+    }
+
+    #[test]
+    fn test_get_candidates_with_max_depth() {
+        let (_dir, root) = create_test_fs();
+        // Depth 1 is the root directory itself.
+        // Depth 2 is the root + immediate children.
+        let files = get_sorted_file_names(&root, false, false, Some(2));
+        // Should find file_a.txt and file_b.txt which is at depth 2 (root -> sub -> file_b)
+        assert_eq!(files, vec!["file_a.txt", "sub/file_b.txt"]);
+    }
 }

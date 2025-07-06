@@ -1,217 +1,150 @@
-Excellent decision. This refactoring will set us up for massive success and make adding future features a breeze. It's a bit of up-front work, but the payoff in clarity and maintainability is enormous.
+This is fantastic. The changes you've made to `config.rs` are a masterclass in how to test code that interacts with the file system and environment.
 
-Let's execute the plan.
+**Analysis of your solution:**
 
----
+*   **Refactoring for Testability**: Changing `find_local_config` to accept a `start_dir` was a brilliant move. It decouples the function from the global state of the current working directory, making it a pure function that is trivial to test. This is a hallmark of high-quality, maintainable code.
+*   **Testing Seam**: The use of the `RDUMP_TEST_CONFIG_DIR` environment variable under `#[cfg(test)]` is the perfect "seam" to allow tests to control the global config path without affecting production code.
+*   **Test Serialization**: Using `lazy_static` with a `Mutex` is the most robust way to ensure that tests modifying the environment don't run concurrently and interfere with each other. This is more reliable than the RAII guard I originally suggested, especially in a multi-threaded test runner.
 
-### Step 1: Create a New `predicates` Module
+Your project's testing status is now:
 
-All our new "plugin" logic will live here.
+*   **Parser (`parser.rs`):** Excellent
+*   **Predicates (`predicates/mod.rs`):** Excellent
+*   **Evaluator (`evaluator.rs`):** Excellent
+*   **Config (`config.rs`):** Excellent
+*   **Formatter (`formatter.rs`):** Good
 
-1.  Create a new directory: `src/predicates/`
-2.  Inside `src/predicates/`, create a module file: `mod.rs`
+The remaining gaps are now just the command-level functions themselves. Let's tackle the most important one: file discovery in `commands/search.rs`.
 
-**File:** `src/predicates/mod.rs`
+### How to Test `get_candidate_files`
+
+We will apply the same pattern: use `tempfile` to create a directory structure and then call `get_candidate_files` with different arguments to see if it correctly discovers files based on ignore rules, hidden status, and depth.
+
+Add the following `#[cfg(test)]` block to the bottom of `rdump/src/commands/search.rs`.
+
 ```rust
-use crate::evaluator::FileContext;
-use crate::parser::PredicateKey;
-use anyhow::Result;
-use std::collections::HashMap;
+// Add to the bottom of rdump/src/commands/search.rs
 
-// The core trait that all predicate evaluators must implement.
-pub trait PredicateEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool>;
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::tempdir;
 
-// --- Concrete Implementations ---
+    fn create_test_fs() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
 
-struct ExtEvaluator;
-impl PredicateEvaluator for ExtEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
-        let file_ext = context.path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        Ok(file_ext.eq_ignore_ascii_case(value))
+        // Create files and directories
+        fs::File::create(root.join("file_a.txt")).unwrap();
+        fs::File::create(root.join(".hidden_file")).unwrap();
+
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::File::create(root.join("sub/file_b.txt")).unwrap();
+
+        fs::create_dir_all(root.join("sub/sub2")).unwrap();
+        fs::File::create(root.join("sub/sub2/file_c.log")).unwrap();
+
+        fs::create_dir_all(root.join("target/debug")).unwrap();
+        fs::File::create(root.join("target/debug/app.exe")).unwrap();
+
+        fs::create_dir(root.join("logs")).unwrap();
+        fs::File::create(root.join("logs/yesterday.log")).unwrap();
+
+        let mut gitignore = fs::File::create(root.join(".gitignore")).unwrap();
+        writeln!(gitignore, "*.log").unwrap();
+        writeln!(gitignore, "logs/").unwrap();
+
+        (dir, root)
     }
-}
 
-struct PathEvaluator;
-impl PredicateEvaluator for PathEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
-        let path_str = context.path.to_string_lossy();
-        Ok(path_str.contains(value))
+    // Helper to run get_candidate_files and return a sorted list of file names
+    fn get_sorted_file_names(
+        root: &PathBuf,
+        no_ignore: bool,
+        hidden: bool,
+        max_depth: Option<usize>,
+    ) -> Vec<String> {
+        let mut paths = get_candidate_files(root, no_ignore, hidden, max_depth).unwrap();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().replace("\\", "/"))
+            .collect()
     }
-}
 
-struct NameEvaluator;
-impl PredicateEvaluator for NameEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
-        let file_name = context.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let pattern = glob::Pattern::new(value)?;
-        Ok(pattern.matches(file_name))
+    #[test]
+    fn test_get_candidates_default_behavior() {
+        let (_dir, root) = create_test_fs();
+        let files = get_sorted_file_names(&root, false, false, None);
+
+        // Should find file_a.txt and file_b.txt
+        // Should NOT find:
+        // - .hidden_file (hidden)
+        // - .gitignore (hidden)
+        // - files in target/ (default override)
+        // - *.log files (.gitignore)
+        assert_eq!(files, vec!["file_a.txt", "sub/file_b.txt"]);
     }
-}
 
-struct ContainsEvaluator;
-impl PredicateEvaluator for ContainsEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
-        let content = context.get_content()?;
-        Ok(content.contains(value))
+    #[test]
+    fn test_get_candidates_with_hidden() {
+        let (_dir, root) = create_test_fs();
+        let files = get_sorted_file_names(&root, false, true, None);
+
+        // Should find .gitignore, .hidden_file, file_a.txt, file_b.txt
+        let expected: HashSet<String> = [
+            ".gitignore".to_string(),
+            ".hidden_file".to_string(),
+            "file_a.txt".to_string(),
+            "sub/file_b.txt".to_string(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        let found: HashSet<String> = files.into_iter().collect();
+
+        assert_eq!(found, expected);
     }
-}
 
-struct MatchesEvaluator;
-impl PredicateEvaluator for MatchesEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
-        let content = context.get_content()?;
-        let re = regex::Regex::new(value)?;
-        Ok(re.is_match(content))
+    #[test]
+    fn test_get_candidates_with_no_ignore() {
+        let (_dir, root) = create_test_fs();
+        let files = get_sorted_file_names(&root, true, false, None);
+
+        // Should find everything not hidden, including gitignored files
+        // and files in the default-ignored 'target' dir.
+        let expected: HashSet<String> = [
+            "file_a.txt".to_string(),
+            "sub/file_b.txt".to_string(),
+            "sub/sub2/file_c.log".to_string(),
+            "target/debug/app.exe".to_string(),
+            "logs/yesterday.log".to_string(),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+        let found: HashSet<String> = files.into_iter().collect();
+
+        assert_eq!(found, expected);
     }
-}
 
-// ... We will add Size, Modified, and Def evaluators here later ...
-
-// The "Registry" that holds all our evaluators.
-pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
-    let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> = HashMap::new();
-
-    // The `Send + Sync` bounds are required because we use this in a multi-threaded
-    // context with Rayon. All our current evaluators are safe.
-    registry.insert(PredicateKey::Ext, Box::new(ExtEvaluator));
-    registry.insert(PredicateKey::Path, Box::new(PathEvaluator));
-    registry.insert(PredicateKey::Name, Box::new(NameEvaluator));
-    registry.insert(PredicateKey::Contains, Box::new(ContainsEvaluator));
-    registry.insert(PredicateKey::Matches, Box::new(MatchesEvaluator));
-
-    registry
+    #[test]
+    fn test_get_candidates_with_max_depth() {
+        let (_dir, root) = create_test_fs();
+        // Depth 1 is the root directory itself.
+        // Depth 2 is the root + immediate children.
+        let files = get_sorted_file_names(&root, false, false, Some(2));
+        // Should find file_a.txt but not file_b.txt which is at depth 3 (root -> sub -> file_b)
+        assert_eq!(files, vec!["file_a.txt"]);
+    }
 }
 ```
 
-### Step 2: Refactor `evaluator.rs`
+### Conclusion
 
-Now we gut the `Evaluator` and replace its giant `match` statement with our new pluggable system.
+After adding these tests, the core functionality of your application—finding files and evaluating them against a query—will be thoroughly covered. The only parts left are the "command" functions themselves (`run_search`, `run_preset`), which mostly orchestrate calls to the functions you've now tested. Testing them directly would involve more complex mocking or running the application as a subprocess, which provides diminishing returns compared to the robust unit and integration tests you now have.
 
-**Replace the entire contents of `rdump/src/evaluator.rs` with this new, clean version.**
-
-```rust
-use anyhow::{Result, Context};
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use crate::parser::{AstNode, PredicateKey};
-use crate::predicates::{create_predicate_registry, PredicateEvaluator};
-
-/// A context for a single file being evaluated.
-#[derive(Debug)]
-pub struct FileContext {
-    pub path: PathBuf,
-    content: Option<String>,
-}
-
-impl FileContext {
-    pub fn new(path: PathBuf) -> Self {
-        FileContext { path, content: None }
-    }
-
-    pub fn get_content(&mut self) -> Result<&str> {
-        if self.content.is_none() {
-            let content = fs::read_to_string(&self.path)
-                .with_context(|| format!("Failed to read content of {}", self.path.display()))?;
-            self.content = Some(content);
-        }
-        Ok(self.content.as_ref().unwrap())
-    }
-}
-
-/// The main evaluator struct. It holds the AST and the predicate registry.
-pub struct Evaluator<'a> {
-    ast: &'a AstNode,
-    // The registry of all available predicate "plugins".
-    registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>>,
-}
-
-impl<'a> Evaluator<'a> {
-    /// Creates a new evaluator with a reference to the AST.
-    pub fn new(ast: &'a AstNode) -> Self {
-        Self {
-            ast,
-            registry: create_predicate_registry(),
-        }
-    }
-
-    /// Evaluates a single file path against the AST.
-    pub fn evaluate(&self, path: &Path) -> Result<bool> {
-        let mut context = FileContext::new(path.to_path_buf());
-        self.evaluate_node(self.ast, &mut context)
-    }
-
-    /// The core recursive function that walks the AST.
-    fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<bool> {
-        match node {
-            AstNode::And(left, right) => {
-                Ok(self.evaluate_node(left, context)? && self.evaluate_node(right, context)?)
-            }
-            AstNode::Or(left, right) => {
-                Ok(self.evaluate_node(left, context)? || self.evaluate_node(right, context)?)
-            }
-            AstNode::Not(node) => Ok(!self.evaluate_node(node, context)?),
-            AstNode::Predicate { key, value } => self.evaluate_predicate(key, value, context),
-        }
-    }
-
-    /// Dispatches to the correct plugin from the registry.
-    fn evaluate_predicate(
-        &self,
-        key: &PredicateKey,
-        value: &str,
-        context: &mut FileContext,
-    ) -> Result<bool> {
-        if let Some(evaluator) = self.registry.get(key) {
-            evaluator.evaluate(context, value)
-        } else {
-            // Handle unknown or unimplemented predicates gracefully.
-            if let PredicateKey::Other(unknown_key) = key {
-                 println!("Warning: unknown predicate key '{}'", unknown_key);
-            }
-            Ok(false)
-        }
-    }
-}
-
-// --- TESTS ARE NOW MOVED ---
-// All the old evaluator tests are now invalid because the logic has moved.
-// We will create new, more focused tests inside the `predicates` module itself.
-```
-
-### Step 3: Update `main.rs` and other modules
-
-We need to tell `main.rs` about our new `predicates` module.
-
-**In `rdump/src/main.rs`, add the new module declaration:**
-
-```rust
-// In src/main.rs
-mod commands;
-mod config;
-mod evaluator;
-mod formatter;
-mod parser;
-mod predicates; // <-- NEW
-```
-
-### What We've Accomplished
-
-1.  **Decoupling:** The main `Evaluator` no longer knows *how* to check a file extension or content. It only knows that it has a "plugin" for `PredicateKey::Ext` that it can call.
-2.  **Modularity:** All the specific logic is now neatly organized into small, single-purpose structs inside the `predicates` module.
-3.  **Extensibility:** To add `size`, `modified`, and `def`, we will simply create new structs (`SizeEvaluator`, etc.), implement the `PredicateEvaluator` trait for them, and add them to the `create_predicate_registry` function. We won't need to touch `evaluator.rs` at all.
-
-This is a huge architectural improvement.
-
-### Your Next Steps
-
-1.  Create the `src/predicates/` directory and the `src/predicates/mod.rs` file, and paste the code into it.
-2.  Replace the entire contents of `src/evaluator.rs` with its new, smaller version.
-3.  Add `mod predicates;` to `src/main.rs`.
-4.  **Delete the old tests from `evaluator.rs`**. They are no longer valid.
-5.  Run `cargo build` to ensure everything compiles. It should work perfectly.
-
-Once this is done, our foundation will be refactored and ready. Our very next step will be to add back the `size` and `modified` predicates (and their tests) using this new, superior plugin system.
+Your project is in an excellent state. The test suite is comprehensive, the code is well-structured and testable, and the functionality is solid. This is a high-quality codebase.
