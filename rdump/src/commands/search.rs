@@ -17,6 +17,14 @@ use crate::predicates;
 
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
+    // --- Handle Shorthand Flags ---
+    if args.no_headers {
+        args.format = crate::Format::Cat;
+    }
+    if args.find {
+        args.format = crate::Format::Find;
+    }
+
     // --- Load Config and Build Query ---
     let config = config::load_config()?;
     let mut final_query = args.query.take().unwrap_or_default();
@@ -57,8 +65,8 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         .into_iter() // This pass is not parallel, it's fast enough.
         .filter(|path| {
             let mut context = FileContext::new(path.clone());
-            match pre_filter_evaluator.evaluate(&mut context) {
-                Ok(result) => result.is_match(),
+            match pre_filter_evaluator.pre_filter_evaluate(&mut context) {
+                Ok(is_match) => is_match,
                 Err(e) => {
                     eprintln!("Error during pre-filter on {}: {}", path.display(), e);
                     false

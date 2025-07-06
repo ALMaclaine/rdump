@@ -83,6 +83,48 @@ impl Evaluator {
         self.evaluate_node(&self.ast, context)
     }
 
+    /// Evaluates the query for a given file path, but only for metadata predicates.
+    pub fn pre_filter_evaluate(&self, context: &mut FileContext) -> Result<bool> {
+        self.pre_filter_evaluate_node(&self.ast, context)
+    }
+
+    /// Recursively evaluates an AST node for the pre-filtering pass.
+    fn pre_filter_evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<bool> {
+        match node {
+            AstNode::Predicate(key, value) => {
+                if let Some(evaluator) = self.registry.get(key) {
+                    Ok(evaluator.evaluate(context, key, value)?.is_match())
+                } else {
+                    // If a predicate is not in the metadata registry, we can't evaluate it.
+                    // We must assume it *could* match and let the full evaluator decide.
+                    Ok(true)
+                }
+            }
+            AstNode::LogicalOp(op, left, right) => {
+                match op {
+                    crate::parser::LogicalOperator::And => {
+                        Ok(self.pre_filter_evaluate_node(left, context)? && self.pre_filter_evaluate_node(right, context)?)
+                    }
+                    crate::parser::LogicalOperator::Or => {
+                        Ok(self.pre_filter_evaluate_node(left, context)? || self.pre_filter_evaluate_node(right, context)?)
+                    }
+                }
+            }
+            AstNode::Not(inner_node) => {
+                // For the pre-filtering pass, if the inner predicate of a NOT is not in the
+                // registry, we cannot definitively say the file *doesn't* match.
+                // For example, for `!contains:foo`, the pre-filter doesn't know the content.
+                // So, we must assume it *could* match and let the full evaluator decide.
+                if let AstNode::Predicate(key, _) = &**inner_node {
+                    if !self.registry.contains_key(key) {
+                        return Ok(true); // Pass to the next stage
+                    }
+                }
+                Ok(!self.pre_filter_evaluate_node(inner_node, context)?)
+            }
+        }
+    }
+
     /// Recursively evaluates an AST node.
     fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<MatchResult> {
         match node {
@@ -122,16 +164,7 @@ impl Evaluator {
                 }
             }
             AstNode::Not(inner_node) => {
-                // For the pre-filtering pass, if the inner predicate of a NOT is not in the
-                // registry, we cannot definitively say the file *doesn't* match.
-                // For example, for `!contains:foo`, the pre-filter doesn't know the content.
-                // So, we must assume it *could* match and let the full evaluator decide.
-                if let AstNode::Predicate(key, _) = &**inner_node {
-                    if !self.registry.contains_key(key) {
-                        return Ok(MatchResult::Boolean(true)); // Pass to the next stage
-                    }
-                }
-                // Otherwise, evaluate the inner node and negate the result.
+                // Evaluate the inner node and negate the result.
                 let result = self.evaluate_node(inner_node, context)?;
                 Ok(MatchResult::Boolean(!result.is_match()))
             }

@@ -172,14 +172,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Search(mut args) => {
-            // --- Handle Shorthand Flags ---
-            if args.no_headers {
-                args.format = Format::Cat;
-            }
-            if args.find {
-                args.format = Format::Find;
-            }
+        Commands::Search(args) => {
             run_search(args)
         }
         Commands::Lang(args) => {

@@ -27,6 +27,162 @@ struct FileOutput {
     content: String,
 }
 
+fn print_markdown_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+    with_line_numbers: bool,
+    use_color: bool,
+) -> Result<()> {
+    for (i, (path, _)) in matching_files.iter().enumerate() {
+        if i > 0 {
+            writeln!(writer, "\n---\n")?;
+        }
+        writeln!(writer, "File: {}", path.display())?;
+        writeln!(writer, "---")?;
+        let content = fs::read_to_string(path)?;
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+        if use_color {
+            // To terminal: use ANSI codes for color
+            print_highlighted_content(writer, &content, extension, with_line_numbers)?;
+        } else {
+            // To file/pipe: use Markdown fences for color
+            print_markdown_fenced_content(writer, &content, extension, with_line_numbers)?;
+        }
+    }
+    Ok(())
+}
+
+fn print_cat_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+    with_line_numbers: bool,
+    use_color: bool,
+) -> Result<()> {
+    for (path, _) in matching_files {
+        let content = fs::read_to_string(path)?;
+        if use_color {
+            // To terminal
+            print_highlighted_content(
+                writer,
+                &content,
+                &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                with_line_numbers,
+            )?;
+        } else {
+            print_plain_content(writer, &content, with_line_numbers)?; // To file/pipe
+        }
+    }
+    Ok(())
+}
+
+fn print_json_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+) -> Result<()> {
+    let mut outputs = Vec::new();
+    for (path, _) in matching_files {
+        let content = fs::read_to_string(path).with_context(|| {
+            format!("Failed to read file for final output: {}", path.display())
+        })?;
+        outputs.push(FileOutput {
+            path: path.to_string_lossy().to_string(),
+            content,
+        });
+    }
+    // Use to_writer_pretty for readable JSON output
+    serde_json::to_writer_pretty(writer, &outputs)?;
+    Ok(())
+}
+
+fn print_paths_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+) -> Result<()> {
+    for (path, _) in matching_files {
+        writeln!(writer, "{}", path.display())?;
+    }
+    Ok(())
+}
+
+fn print_find_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+) -> Result<()> {
+    for (path, _) in matching_files {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
+        let size = metadata.len();
+        let modified: DateTime<Local> = DateTime::from(metadata.modified()?);
+
+        // Get permissions (basic implementation)
+        let perms = metadata.permissions();
+        #[cfg(unix)]
+        let mode = perms.mode();
+        #[cfg(not(unix))]
+        let mode = 0; // Placeholder for non-unix
+        let perms_str = format_mode(mode);
+
+        // Format size into human-readable string
+        let size_str = format_size(size);
+
+        // Format time
+        let time_str = modified.format("%b %d %H:%M").to_string();
+
+        writeln!(
+            writer,
+            "{:<12} {:>8} {} {}",
+            perms_str,
+            size_str,
+            time_str,
+            path.display()
+        )?;
+    }
+    Ok(())
+}
+
+fn print_hunks_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+    with_line_numbers: bool,
+    use_color: bool,
+    context_lines: usize,
+) -> Result<()> {
+    for (i, (path, hunks)) in matching_files.iter().enumerate() {
+        if i > 0 {
+            writeln!(writer, "\n---\n")?;
+        }
+        writeln!(writer, "File: {}", path.display())?;
+        writeln!(writer, "---")?;
+        let content = fs::read_to_string(path)?;
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+        if hunks.is_empty() {
+            // Boolean match, print the whole file
+            print_content_with_style(writer, &content, extension, with_line_numbers, use_color)?;
+        } else {
+            // Hunk match, print with context
+            let lines: Vec<&str> = content.lines().collect();
+            let line_ranges = get_contextual_line_ranges(hunks, &lines, context_lines);
+
+            for (i, range) in line_ranges.iter().enumerate() {
+                if i > 0 {
+                    writeln!(writer, "...")?;
+                }
+                let hunk_content = lines[range.clone()].join("\n");
+                print_content_with_style(
+                    writer,
+                    &hunk_content,
+                    extension,
+                    with_line_numbers,
+                    use_color,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Formats and prints the final output to a generic writer based on the chosen format.
 pub fn print_output(
     writer: &mut impl Write,
@@ -37,122 +193,24 @@ pub fn print_output(
     context_lines: usize,
 ) -> Result<()> {
     match format {
-        Format::Find => {
-            for (path, _) in matching_files {
-                let metadata = fs::metadata(path)
-                    .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
-                let size = metadata.len();
-                let modified: DateTime<Local> = DateTime::from(metadata.modified()?);
-
-                // Get permissions (basic implementation)
-                let perms = metadata.permissions();
-                #[cfg(unix)]
-                let mode = perms.mode();
-                #[cfg(not(unix))]
-                let mode = 0; // Placeholder for non-unix
-                let perms_str = format_mode(mode);
-
-                // Format size into human-readable string
-                let size_str = format_size(size);
-
-                // Format time
-                let time_str = modified.format("%b %d %H:%M").to_string();
-
-                writeln!(
-                    writer,
-                    "{:<12} {:>8} {} {}",
-                    perms_str,
-                    size_str,
-                    time_str,
-                    path.display()
-                )?;
-            }
-        }
-        Format::Paths => {
-            for (path, _) in matching_files {
-                writeln!(writer, "{}", path.display())?;
-            }
-        }
-        Format::Json => {
-            let mut outputs = Vec::new();
-            for (path, _) in matching_files {
-                let content = fs::read_to_string(path).with_context(|| {
-                    format!("Failed to read file for final output: {}", path.display())
-                })?;
-                outputs.push(FileOutput {
-                    path: path.to_string_lossy().to_string(),
-                    content,
-                });
-            }
-            // Use to_writer_pretty for readable JSON output
-            serde_json::to_writer_pretty(writer, &outputs)?;
-        }
-        Format::Cat => {
-            for (path, _) in matching_files {
-                let content = fs::read_to_string(path)?;
-                if use_color {
-                    // To terminal
-                    print_highlighted_content(
-                        writer,
-                        &content,
-                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
-                        with_line_numbers,
-                    )?;
-                } else {
-                    print_plain_content(writer, &content, with_line_numbers)?; // To file/pipe
-                }
-            }
-        }
+        Format::Find => print_find_format(writer, matching_files)?,
+        Format::Paths => print_paths_format(writer, matching_files)?,
+        Format::Json => print_json_format(writer, matching_files)?,
+        Format::Cat => print_cat_format(writer, matching_files, with_line_numbers, use_color)?,
         Format::Markdown => {
-            for (i, (path, _)) in matching_files.iter().enumerate() {
-                if i > 0 {
-                    writeln!(writer, "\n---\n")?;
-                }
-                writeln!(writer, "File: {}", path.display())?;
-                writeln!(writer, "---")?;
-                let content = fs::read_to_string(path)?;
-                let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-                if use_color {
-                    // To terminal: use ANSI codes for color
-                    print_highlighted_content(writer, &content, extension, with_line_numbers)?;
-                } else {
-                    // To file/pipe: use Markdown fences for color
-                    print_markdown_fenced_content(writer, &content, extension, with_line_numbers)?;
-                }
-            }
+            print_markdown_format(writer, matching_files, with_line_numbers, use_color)?
         }
-        Format::Hunks => {
-            for (i, (path, hunks)) in matching_files.iter().enumerate() {
-                if i > 0 {
-                    writeln!(writer, "\n---\n")?;
-                }
-                writeln!(writer, "File: {}", path.display())?;
-                writeln!(writer, "---")?;
-                let content = fs::read_to_string(path)?;
-                let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-                if hunks.is_empty() {
-                    // Boolean match, print the whole file
-                    print_content_with_style(writer, &content, extension, with_line_numbers, use_color)?;
-                } else {
-                    // Hunk match, print with context
-                    let lines: Vec<&str> = content.lines().collect();
-                    let line_ranges = get_contextual_line_ranges(hunks, &lines, context_lines);
-
-                    for (i, range) in line_ranges.iter().enumerate() {
-                        if i > 0 {
-                            writeln!(writer, "...")?;
-                        }
-                        let hunk_content = lines[range.clone()].join("\n");
-                        print_content_with_style(writer, &hunk_content, extension, with_line_numbers, use_color)?;
-                    }
-                }
-            }
-        }
+        Format::Hunks => print_hunks_format(
+            writer,
+            matching_files,
+            with_line_numbers,
+            use_color,
+            context_lines,
+        )?,
     }
     Ok(())
 }
+
 
 
 /// Helper to choose the correct printing function based on color/style preference.
