@@ -6,10 +6,11 @@ expression = { logical_or }
 
 // Define operator precedence: OR is lowest
 logical_or = { logical_and ~ (OR ~ logical_and)* }
-logical_and = { factor ~ (AND ~ factor)* }
+logical_and = { term ~ (AND ~ term)* }
 
-// A factor can be a negated factor, a grouped expression, or a simple predicate
-factor = { NOT? ~ (predicate | "(" ~ expression ~ ")") }
+// A term can be a negated factor, a grouped expression, or a simple predicate
+term = { NOT? ~ factor }
+factor = { predicate | "(" ~ expression ~ ")" }
 
 // A predicate is our key:value pair
 predicate = { identifier ~ ":" ~ value }
@@ -22,17 +23,12 @@ value = { quoted_value | unquoted_value }
 
 // An unquoted value is a sequence of characters that are not special operators or whitespace.
 // It can include comparison operators and time/size units.
-unquoted_value = @{ (!(":" | "&" | "|" | "(" | ")" | " " | "\t" | "\n" | "\r") ~ ANY)+ }
+unquoted_value = @{ (!(" " | "\t" | "\n" | "\r" | "(" | ")") ~ ANY)+ }
 
 // A quoted value captures everything between the quotes
 quoted_value = { single_quoted | double_quoted }
-single_quoted = @{ "'" ~ inner_single_quoted ~ "'" }
-double_quoted = @{ "\"" ~ inner_double_quoted ~ "\"" }
-
-// Define what can be inside the quotes (anything except the closing quote)
-inner_single_quoted = { (!"'" ~ ANY)* }
-inner_double_quoted = { (!"\"" ~ ANY)* }
-
+single_quoted = @{ "'" ~ (("\\'" | !"'") ~ ANY)* ~ "'" }
+double_quoted = @{ "\"" ~ (("\\\"" | !"\"") ~ ANY)* ~ "\"" }
 
 // Define operators
 AND = { "&" }

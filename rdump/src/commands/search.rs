@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::evaluator::Evaluator;
+use crate::evaluator::{Evaluator, FileContext};
 use crate::formatter;
 use crate::parser;
 use crate::{config, SearchArgs};
@@ -43,15 +43,18 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let ast = parser::parse_query(&final_query)?;
 
     // --- 3. Evaluate files ---
-    let evaluator = Evaluator::new(&ast);
+    let evaluator = Evaluator::new(ast);
     let mut matching_files: Vec<PathBuf> = candidate_files
         .par_iter()
-        .filter_map(|path| match evaluator.evaluate(path) {
-            Ok(true) => Some(path.clone()),
-            Ok(false) => None,
-            Err(e) => {
-                eprintln!("Error evaluating file {}: {}", path.display(), e);
-                None
+        .filter_map(|path| {
+            let mut context = FileContext::new(path.clone());
+            match evaluator.evaluate(&mut context) {
+                Ok(true) => Some(path.clone()),
+                Ok(false) => None,
+                Err(e) => {
+                    eprintln!("Error evaluating file {}: {}", path.display(), e);
+                    None
+                }
             }
         })
         .collect();

@@ -110,7 +110,7 @@ fn test_search_invalid_query_fails() -> Result<(), Box<dyn std::error::Error>> {
     cmd.assert()
         .failure()
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("Syntax error in query"));
+        .stderr(predicate::str::contains("expected value"));
     Ok(())
 }
 

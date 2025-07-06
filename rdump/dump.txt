@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 clap = { version = "4.5.4", features = ["derive"] }
 anyhow = "1.0.86"
-ignore = "0.4.22" # <--- NO FEATURES. THIS IS THE CORRECT LINE.
+ignore = "0.4.22"
 rayon = "1.10.0"
 regex = "1.10.4"
 serde = { version = "1.0.203", features = ["derive"] }
@@ -21,11 +21,14 @@ dirs = "5.0.1"
 toml = "0.8.12"
 chrono = { version = "0.4", features = ["serde"] }
 lazy_static = "1.4.0"
+tree-sitter = "0.22.6"
+tree-sitter-rust = "0.21.0"
 
 [dev-dependencies]
 assert_cmd = "2.0.14"
 predicates = "3.1.0"
 tempfile = "3.10.1"
+
 
 // END rdump/Cargo.toml
 
@@ -109,7 +112,7 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use crate::evaluator::Evaluator;
+use crate::evaluator::{Evaluator, FileContext};
 use crate::formatter;
 use crate::parser;
 use crate::{config, SearchArgs};
@@ -147,15 +150,18 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let ast = parser::parse_query(&final_query)?;
 
     // --- 3. Evaluate files ---
-    let evaluator = Evaluator::new(&ast);
+    let evaluator = Evaluator::new(ast);
     let mut matching_files: Vec<PathBuf> = candidate_files
         .par_iter()
-        .filter_map(|path| match evaluator.evaluate(path) {
-            Ok(true) => Some(path.clone()),
-            Ok(false) => None,
-            Err(e) => {
-                eprintln!("Error evaluating file {}: {}", path.display(), e);
-                None
+        .filter_map(|path| {
+            let mut context = FileContext::new(path.clone());
+            match evaluator.evaluate(&mut context) {
+                Ok(true) => Some(path.clone()),
+                Ok(false) => None,
+                Err(e) => {
+                    eprintln!("Error evaluating file {}: {}", path.display(), e);
+                    None
+                }
             }
         })
         .collect();
@@ -504,166 +510,179 @@ mod tests {
 
 // START rdump/src/evaluator.rs
 
-use anyhow::{Result, Context};
+use anyhow::{Result, Context, anyhow};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use tree_sitter::{Parser as TreeSitterParser, Tree};
 
 use crate::parser::{AstNode, PredicateKey};
 use crate::predicates::{create_predicate_registry, PredicateEvaluator};
 
-/// A context for a single file being evaluated.
-#[derive(Debug)]
+/// Holds the context for a single file being evaluated.
+/// It lazily loads content and caches the tree-sitter AST.
 pub struct FileContext {
     pub path: PathBuf,
     content: Option<String>,
+    // Cache for the parsed tree-sitter AST
+    tree: Option<Tree>,
 }
 
 impl FileContext {
     pub fn new(path: PathBuf) -> Self {
-        FileContext { path, content: None }
+        FileContext { path, content: None, tree: None }
     }
 
     pub fn get_content(&mut self) -> Result<&str> {
         if self.content.is_none() {
             let content = fs::read_to_string(&self.path)
-                .with_context(|| format!("Failed to read content of {}", self.path.display()))?;
+                .with_context(|| format!("Failed to read file {}", self.path.display()))?;
             self.content = Some(content);
         }
         Ok(self.content.as_ref().unwrap())
     }
+
+    // Lazily parses the file with tree-sitter and caches the result.
+    pub fn get_tree(&mut self, language: tree_sitter::Language) -> Result<&Tree> {
+        if self.tree.is_none() {
+            let path_display = self.path.display().to_string();
+            let content = self.get_content()?;
+            let mut parser = TreeSitterParser::new();
+            parser.set_language(&language)
+                .with_context(|| format!("Failed to set language for tree-sitter parser on {}", path_display))?;
+            let tree = parser.parse(content, None).ok_or_else(|| anyhow!("Tree-sitter failed to parse {}", path_display))?;
+            self.tree = Some(tree);
+        }
+        Ok(self.tree.as_ref().unwrap())
+    }
 }
 
 /// The main evaluator struct. It holds the AST and the predicate registry.
-pub struct Evaluator<'a> {
-    ast: &'a AstNode,
-    // The registry of all available predicate "plugins".
+pub struct Evaluator {
+    ast: AstNode,
     registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>>,
 }
 
-impl<'a> Evaluator<'a> {
-    /// Creates a new evaluator with a reference to the AST.
-    pub fn new(ast: &'a AstNode) -> Self {
-        Self {
+impl Evaluator {
+    pub fn new(ast: AstNode) -> Self {
+        Evaluator {
             ast,
             registry: create_predicate_registry(),
         }
     }
 
-    /// Evaluates a single file path against the AST.
-    pub fn evaluate(&self, path: &Path) -> Result<bool> {
-        let mut context = FileContext::new(path.to_path_buf());
-        self.evaluate_node(self.ast, &mut context)
+    /// Evaluates the query for a given file path.
+    pub fn evaluate(&self, context: &mut FileContext) -> Result<bool> {
+        self.evaluate_node(&self.ast, context)
     }
 
-    /// The core recursive function that walks the AST.
+    /// Recursively evaluates an AST node.
     fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<bool> {
         match node {
-            AstNode::And(left, right) => {
-                Ok(self.evaluate_node(left, context)? && self.evaluate_node(right, context)?)
+            AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
+            AstNode::LogicalOp(op, left, right) => {
+                let left_result = self.evaluate_node(left, context)?;
+                match op {
+                    crate::parser::LogicalOperator::And => {
+                        if left_result {
+                            self.evaluate_node(right, context)
+                        } else {
+                            Ok(false)
+                        }
+                    }
+                    crate::parser::LogicalOperator::Or => {
+                        if left_result {
+                            Ok(true)
+                        } else {
+                            self.evaluate_node(right, context)
+                        }
+                    }
+                }
             }
-            AstNode::Or(left, right) => {
-                Ok(self.evaluate_node(left, context)? || self.evaluate_node(right, context)?)
+            AstNode::Not(node) => {
+                let result = self.evaluate_node(node, context)?;
+                Ok(!result)
             }
-            AstNode::Not(node) => Ok(!self.evaluate_node(node, context)?),
-            AstNode::Predicate { key, value } => self.evaluate_predicate(key, value, context),
         }
     }
 
-    /// Dispatches to the correct plugin from the registry.
+    /// Evaluates a single predicate.
     fn evaluate_predicate(
         &self,
         key: &PredicateKey,
         value: &str,
         context: &mut FileContext,
     ) -> Result<bool> {
-        if let Some(evaluator) = self.registry.get(key) {
-            evaluator.evaluate(context, value)
+        if let Some(evaluator) = self.registry.get(key) {            
+            evaluator.evaluate(context, key, value)
         } else {
             // Handle unknown or unimplemented predicates gracefully.
-            if let PredicateKey::Other(unknown_key) = key {
-                 println!("Warning: unknown predicate key '{}'", unknown_key);
-            }
             Ok(false)
         }
     }
 }
 
-// --- TESTS ARE NOW MOVED ---
-// All the old evaluator tests are now invalid because the logic has moved.
-// We will create new, more focused tests inside the `predicates` module itself.
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::parser::parse_query;
-    use std::io::Write;
     use tempfile::NamedTempFile;
+    use std::io::Write;
 
-    // Helper to create a file with specific content for testing
-    fn create_test_file(content: &str) -> NamedTempFile {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(content.as_bytes()).unwrap();
+    fn create_temp_file(content: &str) -> NamedTempFile {
+        let file = NamedTempFile::new().unwrap();
+        write!(file.as_file(), "{}", content).unwrap();
         file
     }
 
     #[test]
-    fn test_logical_operators() {
-        let file = create_test_file("fn main() {}");
-        // Give the temp file a `.rs` extension for the ext: predicate
-        let path_rs = file.path().with_extension("rs");
-        std::fs::rename(file.path(), &path_rs).unwrap();
-
-        // true & true => true
-        let ast_and_true = parse_query("ext:rs & contains:'main'").unwrap();
-        let evaluator_and_true = Evaluator::new(&ast_and_true);
-        assert!(evaluator_and_true.evaluate(&path_rs).unwrap());
-
-        // true & false => false
-        let ast_and_false = parse_query("ext:rs & contains:'other'").unwrap();
-        let evaluator_and_false = Evaluator::new(&ast_and_false);
-        assert!(!evaluator_and_false.evaluate(&path_rs).unwrap());
-
-        // true | false => true
-        let ast_or_true = parse_query("ext:rs | contains:'other'").unwrap();
-        let evaluator_or_true = Evaluator::new(&ast_or_true);
-        assert!(evaluator_or_true.evaluate(&path_rs).unwrap());
-
-        // false | false => false
-        let ast_or_false = parse_query("ext:md | contains:'other'").unwrap();
-        let evaluator_or_false = Evaluator::new(&ast_or_false);
-        assert!(!evaluator_or_false.evaluate(&path_rs).unwrap());
-
-        // !false => true
-        let ast_not_true = parse_query("!ext:md").unwrap();
-        let evaluator_not_true = Evaluator::new(&ast_not_true);
-        assert!(evaluator_not_true.evaluate(&path_rs).unwrap());
-
-        // !true => false
-        let ast_not_false = parse_query("!ext:rs").unwrap();
-        let evaluator_not_false = Evaluator::new(&ast_not_false);
-        assert!(!evaluator_not_false.evaluate(&path_rs).unwrap());
+    fn test_evaluate_simple_predicate() {
+        let file = create_temp_file("hello world");
+        let mut context = FileContext::new(file.path().to_path_buf());
+        let ast = parse_query("contains:world").unwrap();
+        let evaluator = Evaluator::new(ast);
+        assert!(evaluator.evaluate(&mut context).unwrap());
     }
 
     #[test]
-    fn test_file_context_lazy_loading() {
-        let file = create_test_file("lazy content");
+    fn test_evaluate_logical_and() {
+        let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
+        let ast = parse_query("contains:hello & contains:world").unwrap();
+        let evaluator = Evaluator::new(ast);
+        assert!(evaluator.evaluate(&mut context).unwrap());
 
-        // Content is None initially
-        assert!(context.content.is_none());
+        let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
+        let evaluator_fail = Evaluator::new(ast_fail);
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap());
+    }
 
-        // get_content loads it
-        let content = context.get_content().unwrap();
-        assert_eq!(content, "lazy content");
-        assert!(context.content.is_some());
+    #[test]
+    fn test_evaluate_logical_or() {
+        let file = create_temp_file("hello world");
+        let mut context = FileContext::new(file.path().to_path_buf());
+        let ast = parse_query("contains:hello | contains:goodbye").unwrap();
+        let evaluator = Evaluator::new(ast);
+        assert!(evaluator.evaluate(&mut context).unwrap());
 
-        // Calling it again returns the same content without re-reading (implicitly)
-        let content_again = context.get_content().unwrap();
-        assert_eq!(content_again, "lazy content");
+        let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
+        let evaluator_fail = Evaluator::new(ast_fail);
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap());
+    }
+
+    #[test]
+    fn test_evaluate_negation() {
+        let file = create_temp_file("hello world");
+        let mut context = FileContext::new(file.path().to_path_buf());
+        let ast = parse_query("!contains:goodbye").unwrap();
+        let evaluator = Evaluator::new(ast);
+        assert!(evaluator.evaluate(&mut context).unwrap());
+
+        let ast_fail = parse_query("!contains:hello").unwrap();
+        let evaluator_fail = Evaluator::new(ast_fail);
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap());
     }
 }
-
 
 // END rdump/src/evaluator.rs
 
@@ -1031,7 +1050,7 @@ use pest_derive::Parser;
 #[grammar = "rql.pest"]
 pub struct RqlParser;
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum PredicateKey {
     Ext,
     Name,
@@ -1041,131 +1060,118 @@ pub enum PredicateKey {
     // --- NEW PREDICATES ---
     Size,
     Modified,
+    // --- NEW SEMANTIC PREDICATES ---
+    Def,
+    Func,
+    Import,
     // A key for testing or unknown predicates
     Other(String),
 }
 
-impl PredicateKey {
-    fn from_str(s: &str) -> Self {
+impl From<&str> for PredicateKey {
+    fn from(s: &str) -> Self {
         match s {
             "ext" => Self::Ext,
             "name" => Self::Name,
             "path" => Self::Path,
-            "contains" | "c" => Self::Contains,
-            "matches" | "m" => Self::Matches,
+            "contains" => Self::Contains,
+            "matches" => Self::Matches,
             // --- NEW PREDICATES ---
             "size" => Self::Size,
             "modified" => Self::Modified,
+            // --- NEW SEMANTIC PREDICATES ---
+            "def" => Self::Def,
+            "func" => Self::Func,
+            "import" => Self::Import,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum AstNode {
-    And(Box<AstNode>, Box<AstNode>),
-    Or(Box<AstNode>, Box<AstNode>),
+    Predicate(PredicateKey, String),
+    LogicalOp(LogicalOperator, Box<AstNode>, Box<AstNode>),
     Not(Box<AstNode>),
-    Predicate { key: PredicateKey, value: String },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum LogicalOperator {
+    And,
+    Or,
 }
 
 pub fn parse_query(query: &str) -> Result<AstNode> {
-    // Check for empty or whitespace-only queries BEFORE parsing.
-    if query.trim().is_empty() {
-        return Err(anyhow!("Empty query"));
-    }
-
-    // Map the pest error to a cleaner message if parsing fails.
-    let mut pairs = RqlParser::parse(Rule::query, query)
-        .map_err(|e| anyhow!("Syntax error in query: {}", e))?;
-
-    let top_level_pair = pairs.next().unwrap(); // Should not fail after the check above
-    build_ast_from_pair(top_level_pair)
+    let pairs = RqlParser::parse(Rule::query, query)?;
+    build_ast_from_pairs(pairs.peek().unwrap())
 }
 
-fn build_ast_from_pair(pair: Pair<Rule>) -> Result<AstNode> {
+fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
     match pair.as_rule() {
-        Rule::query | Rule::expression => build_ast_from_pair(pair.into_inner().next().unwrap()),
-        Rule::logical_or => {
-            let mut inner = pair.into_inner();
-            let mut ast = build_ast_from_pair(inner.next().unwrap())?;
-            while inner.next().is_some() {
-                let rhs = build_ast_from_pair(inner.next().unwrap())?;
-                ast = AstNode::Or(Box::new(ast), Box::new(rhs));
-            }
-            Ok(ast)
+        Rule::query => build_ast_from_pairs(pair.into_inner().next().unwrap()),
+        Rule::expression | Rule::logical_or | Rule::logical_and => {
+            build_ast_from_logical_op(pair)
         }
-        Rule::logical_and => {
+        Rule::term => {
             let mut inner = pair.into_inner();
-            let mut ast = build_ast_from_pair(inner.next().unwrap())?;
-            while inner.next().is_some() {
-                let rhs = build_ast_from_pair(inner.next().unwrap())?;
-                ast = AstNode::And(Box::new(ast), Box::new(rhs));
-            }
-            Ok(ast)
-        }
-        Rule::factor => {
-            let mut inner = pair.into_inner();
-            let first_node = inner.next().unwrap();
-            if first_node.as_rule() == Rule::NOT {
-                let expr = build_ast_from_pair(inner.next().unwrap())?;
-                Ok(AstNode::Not(Box::new(expr)))
+            let first = inner.next().unwrap();
+            if first.as_rule() == Rule::NOT {
+                let factor = inner.next().unwrap();
+                let ast = build_ast_from_pairs(factor)?;
+                Ok(AstNode::Not(Box::new(ast)))
             } else {
-                build_ast_from_pair(first_node)
+                build_ast_from_pairs(first)
             }
         }
+        Rule::factor => build_ast_from_pairs(pair.into_inner().next().unwrap()),
         Rule::predicate => {
-            let mut inner = pair.into_inner();
-            let key_str = inner.next().unwrap().as_str();
-            let key = PredicateKey::from_str(key_str);
-
-            let value_pair = inner.next().unwrap();
-            let inner_value_pair = value_pair.into_inner().next().unwrap();
-            let final_value = match inner_value_pair.as_rule() {
-                Rule::unquoted_value => inner_value_pair.as_str().to_string(),
-                Rule::quoted_value => {
-                    let s = inner_value_pair.as_str();
-                    s[1..s.len() - 1].to_string()
-                }
-                _ => unreachable!(),
-            };
-            Ok(AstNode::Predicate {
-                key,
-                value: final_value,
-            })
+            let mut predicate_parts = pair.into_inner();
+            let key_pair = predicate_parts.next().unwrap();
+            let value_pair = predicate_parts.next().unwrap();
+            let key = PredicateKey::from(key_pair.as_str());
+            let value = unescape_value(value_pair.as_str());
+            Ok(AstNode::Predicate(key, value))
         }
-        _ => unreachable!(
-            "build_ast_from_pair called on unexpected rule: {:?}",
-            pair.as_rule()
-        ),
+        _ => Err(anyhow!("Unknown rule: {:?}", pair.as_rule())),
     }
 }
+
+fn build_ast_from_logical_op(pair: Pair<Rule>) -> Result<AstNode> {
+    let mut inner_pairs = pair.into_inner();
+    let mut ast = build_ast_from_pairs(inner_pairs.next().unwrap())?;
+
+    while let Some(op_pair) = inner_pairs.next() {
+        let op = match op_pair.as_str() {
+            "&" => LogicalOperator::And,
+            "|" => LogicalOperator::Or,
+            _ => unreachable!(),
+        };
+        let right_pair = inner_pairs.next().unwrap();
+        let right_ast = build_ast_from_pairs(right_pair)?;
+        ast = AstNode::LogicalOp(op, Box::new(ast), Box::new(right_ast));
+    }
+    Ok(ast)
+}
+
+fn unescape_value(value: &str) -> String {
+    if value.starts_with('"') && value.ends_with('"') {
+        return value[1..value.len() - 1].replace("\"", "\"");
+    }
+    if value.starts_with('\'') && value.ends_with('\'') {
+        return value[1..value.len() - 1].replace("\\'", "\'");
+    }
+    value.to_string()
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    impl PartialEq for AstNode {
-        fn eq(&self, other: &Self) -> bool {
-            match (self, other) {
-                (AstNode::And(l1, r1), AstNode::And(l2, r2)) => l1 == l2 && r1 == r2,
-                (AstNode::Or(l1, r1), AstNode::Or(l2, r2)) => l1 == l2 && r1 == r2,
-                (AstNode::Not(n1), AstNode::Not(n2)) => n1 == n2,
-                (
-                    AstNode::Predicate { key: k1, value: v1 },
-                    AstNode::Predicate { key: k2, value: v2 },
-                ) => k1 == k2 && v1 == v2,
-                _ => false,
-            }
-        }
-    }
-
+    // Helper to create a predicate node for cleaner tests.
     fn predicate(key: PredicateKey, value: &str) -> Box<AstNode> {
-        Box::new(AstNode::Predicate {
-            key,
-            value: value.to_string(),
-        })
+        Box::new(AstNode::Predicate(key, value.to_string()))
     }
 
     #[test]
@@ -1175,265 +1181,243 @@ mod tests {
     }
 
     #[test]
-    fn test_predicate_with_quoted_value() {
-        let ast = parse_query("contains:'fn main'").unwrap();
-        assert_eq!(ast, *predicate(PredicateKey::Contains, "fn main"));
+    fn test_parse_predicate_with_quoted_value() {
+        let ast = parse_query("name:\"foo bar\"").unwrap();
+        assert_eq!(ast, *predicate(PredicateKey::Name, "foo bar"));
     }
 
     #[test]
-    fn test_predicate_alias() {
-        let ast = parse_query("c:\"some value\"").unwrap();
-        assert_eq!(ast, *predicate(PredicateKey::Contains, "some value"));
-    }
-
-    #[test]
-    fn test_unknown_predicate_key() {
-        let ast = parse_query("extension:rs").unwrap();
+    fn test_parse_logical_and() {
+        let ast = parse_query("ext:rs & name:\"foo\"").unwrap();
         assert_eq!(
             ast,
-            *predicate(PredicateKey::Other("extension".to_string()), "rs")
+            AstNode::LogicalOp(
+                LogicalOperator::And,
+                predicate(PredicateKey::Ext, "rs"),
+                predicate(PredicateKey::Name, "foo")
+            )
         );
     }
 
     #[test]
-    fn test_parse_and_operator() {
-        let ast = parse_query("ext:rs & contains:'fn'").unwrap();
-        let expected = AstNode::And(
-            predicate(PredicateKey::Ext, "rs"),
-            predicate(PredicateKey::Contains, "fn"),
-        );
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_parse_or_operator() {
+    fn test_parse_logical_or() {
         let ast = parse_query("ext:rs | ext:toml").unwrap();
-        let expected = AstNode::Or(
-            predicate(PredicateKey::Ext, "rs"),
-            predicate(PredicateKey::Ext, "toml"),
-        );
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_parse_not_operator() {
-        let ast = parse_query("!ext:md").unwrap();
-        let expected = AstNode::Not(predicate(PredicateKey::Ext, "md"));
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_parse_precedence() {
-        let ast = parse_query("ext:rs & name:main | ext:toml").unwrap();
-        let expected = AstNode::Or(
-            Box::new(AstNode::And(
+        assert_eq!(
+            ast,
+            AstNode::LogicalOp(
+                LogicalOperator::Or,
                 predicate(PredicateKey::Ext, "rs"),
-                predicate(PredicateKey::Name, "main"),
-            )),
-            predicate(PredicateKey::Ext, "toml"),
+                predicate(PredicateKey::Ext, "toml")
+            )
         );
-        assert_eq!(ast, expected);
     }
 
     #[test]
-    fn test_parse_parentheses() {
-        let ast = parse_query("ext:rs & (name:main | ext:toml)").unwrap();
-        let expected = AstNode::And(
+    fn test_parse_negation() {
+        let ast = parse_query("!ext:rs").unwrap();
+        assert_eq!(ast, AstNode::Not(predicate(PredicateKey::Ext, "rs")));
+    }
+
+    #[test]
+    fn test_parse_complex_query() {
+        let ast = parse_query("ext:rs & (name:\"foo\" | name:\"bar\") & !path:tests").unwrap();
+        let inner_or = AstNode::LogicalOp(
+            LogicalOperator::Or,
+            predicate(PredicateKey::Name, "foo"),
+            predicate(PredicateKey::Name, "bar"),
+        );
+        let and_with_or = AstNode::LogicalOp(
+            LogicalOperator::And,
             predicate(PredicateKey::Ext, "rs"),
-            Box::new(AstNode::Or(
-                predicate(PredicateKey::Name, "main"),
-                predicate(PredicateKey::Ext, "toml"),
-            )),
+            Box::new(inner_or),
         );
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_parse_complex_nested_query() {
-        let ast = parse_query("!(ext:rs | path:tests) & (contains:'foo' | c:'bar')").unwrap();
-        let expected = AstNode::And(
-            Box::new(AstNode::Not(Box::new(AstNode::Or(
-                predicate(PredicateKey::Ext, "rs"),
-                predicate(PredicateKey::Path, "tests"),
-            )))),
-            Box::new(AstNode::Or(
-                predicate(PredicateKey::Contains, "foo"),
-                predicate(PredicateKey::Contains, "bar"),
-            )),
+        let final_ast = AstNode::LogicalOp(
+            LogicalOperator::And,
+            Box::new(and_with_or),
+            Box::new(AstNode::Not(predicate(PredicateKey::Path, "tests"))),
         );
-        assert_eq!(ast, expected);
+        assert_eq!(ast, final_ast);
     }
 
     #[test]
-    fn test_whitespace_insensitivity() {
-        let ast = parse_query("  ext:rs   &   (  path:src   )  ").unwrap();
-        let expected = AstNode::And(
-            predicate(PredicateKey::Ext, "rs"),
-            predicate(PredicateKey::Path, "src"),
-        );
-        assert_eq!(ast, expected);
+    fn test_unescape_value() {
+        assert_eq!(unescape_value(r#""hello "world"""#), "hello \"world\"");
+        assert_eq!(unescape_value(r#"'hello 'world''"#), "hello 'world'");
+        assert_eq!(unescape_value("no_quotes"), "no_quotes");
     }
 
     #[test]
-    fn test_no_whitespace() {
-        let ast = parse_query("ext:rs&path:src").unwrap();
-        let expected = AstNode::And(
-            predicate(PredicateKey::Ext, "rs"),
-            predicate(PredicateKey::Path, "src"),
-        );
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_deeply_nested_precedence() {
-        let ast = parse_query("a:1 | b:2 & c:3 | d:4 & e:5").unwrap();
-        let expected = AstNode::Or(
-            Box::new(AstNode::Or(
-                predicate(PredicateKey::Other("a".to_string()), "1"),
-                Box::new(AstNode::And(
-                    predicate(PredicateKey::Other("b".to_string()), "2"),
-                    // THIS IS THE CORRECTED LINE:
-                    predicate(PredicateKey::Contains, "3"),
-                )),
-            )),
-            Box::new(AstNode::And(
-                predicate(PredicateKey::Other("d".to_string()), "4"),
-                predicate(PredicateKey::Other("e".to_string()), "5"),
-            )),
-        );
-        assert_eq!(ast, expected);
-    }
-
-    // --- SYNTAX ERROR TESTS ---
-
-    #[test]
-    fn test_error_on_trailing_operator() {
-        let result = parse_query("ext:rs &");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_error_on_missing_value() {
-        let result = parse_query("ext:");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_error_on_unclosed_parenthesis() {
-        let result = parse_query("(ext:rs | path:src");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_error_on_empty_query() {
-        let result = parse_query("");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Empty query");
-    }
-
-    #[test]
-    fn test_error_on_whitespace_query() {
-        let result = parse_query("   ");
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().to_string(), "Empty query");
-    }
-
-    #[test]
-    fn test_not_precedence_with_and() {
-        // `!` should have higher precedence than `&`.
-        // Should parse as: (!ext:rs) & path:src
-        let ast = parse_query("!ext:rs & path:src").unwrap();
-        let expected = AstNode::And(
-            Box::new(AstNode::Not(predicate(PredicateKey::Ext, "rs"))),
-            predicate(PredicateKey::Path, "src"),
-        );
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_not_with_parentheses() {
-        // `!` should apply to the entire parenthesized group.
-        let ast = parse_query("!(ext:rs | path:src)").unwrap();
-        let expected = AstNode::Not(Box::new(AstNode::Or(
-            predicate(PredicateKey::Ext, "rs"),
-            predicate(PredicateKey::Path, "src"),
-        )));
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_long_or_chain_is_left_associative() {
-        // Should parse as: ((a | b) | c) | d
-        let ast = parse_query("ext:a | ext:b | ext:c | ext:d").unwrap();
-        let expected = AstNode::Or(
-            Box::new(AstNode::Or(
-                Box::new(AstNode::Or(
-                    predicate(PredicateKey::Ext, "a"),
-                    predicate(PredicateKey::Ext, "b"),
-                )),
-                predicate(PredicateKey::Ext, "c"),
-            )),
-            predicate(PredicateKey::Ext, "d"),
-        );
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_long_and_chain_is_left_associative() {
-        // Should parse as: ((a & b) & c) & d
-        let ast = parse_query("ext:a & ext:b & ext:c & ext:d").unwrap();
-        let expected = AstNode::And(
-            Box::new(AstNode::And(
-                Box::new(AstNode::And(
-                    predicate(PredicateKey::Ext, "a"),
-                    predicate(PredicateKey::Ext, "b"),
-                )),
-                predicate(PredicateKey::Ext, "c"),
-            )),
-            predicate(PredicateKey::Ext, "d"),
-        );
-        assert_eq!(ast, expected);
-    }
-
-    #[test]
-    fn test_redundant_parentheses() {
-        let ast = parse_query("((ext:rs))").unwrap();
-        assert_eq!(ast, *predicate(PredicateKey::Ext, "rs"));
-    }
-
-    #[test]
-    fn test_value_containing_special_char_must_be_quoted() {
-        // An unquoted value cannot contain '&'
-        let result = parse_query("name:foo&bar");
-        assert!(result.is_err());
-
-        // But a quoted one can
-        let ast = parse_query("name:'foo&bar'").unwrap();
+    fn test_parse_predicate_with_special_chars_in_value() {
+        let ast = parse_query(r#"name:"foo&bar""#).unwrap();
         assert_eq!(ast, *predicate(PredicateKey::Name, "foo&bar"));
+    }
+
+    #[test]
+    fn test_parse_semantic_predicates() {
+        let ast_def = parse_query("def:User").unwrap();
+        assert_eq!(ast_def, *predicate(PredicateKey::Def, "User"));
+
+        let ast_func = parse_query("func:get_user").unwrap();
+        assert_eq!(ast_func, *predicate(PredicateKey::Func, "get_user"));
+
+        let ast_import = parse_query("import:serde").unwrap();
+        assert_eq!(ast_import, *predicate(PredicateKey::Import, "serde"));
     }
 }
 
-
 // END rdump/src/parser.rs
 
+// START rdump/src/predicates/code_aware.rs
+
+use crate::evaluator::FileContext;
+use crate::parser::PredicateKey;
+use super::PredicateEvaluator;
+
+use anyhow::{Context, Result};
+use lazy_static::lazy_static;
+use std::collections::HashMap;
+use tree_sitter::{Query, QueryCursor};
+
+/// Defines the tree-sitter queries for a specific language.
+struct LanguageProfile {
+    language: tree_sitter::Language,
+    queries: HashMap<PredicateKey, String>,
+}
+
+// A static registry of language profiles, loaded at compile time.
+lazy_static! {
+    static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
+        let mut m = HashMap::new();
+        // Phase 2.0: Only Rust is implemented.
+        m.insert("rs", create_rust_profile());
+        // In the future, we will add:
+        // m.insert("py", create_python_profile());
+        // m.insert("js", create_javascript_profile());
+        m
+    };
+}
+
+/// Creates the profile for the Rust language.
+fn create_rust_profile() -> LanguageProfile {
+    let language = tree_sitter_rust::language();
+    let mut queries = HashMap::new();
+
+    // Query for struct, enum, and trait definitions.
+    // We capture the node associated with the name using `@match`.
+    queries.insert(
+        PredicateKey::Def,
+        r#"
+        (struct_item name: (_) @match)
+        (enum_item name: (_) @match)
+        (trait_item name: (_) @match)
+        "#
+        .to_string(),
+    );
+
+    // Query for standalone functions and methods in traits or impls.
+    queries.insert(
+        PredicateKey::Func,
+        "
+        [
+            (function_item name: (identifier) @match)
+            (function_signature_item name: (identifier) @match)
+        ]"
+        .to_string(),
+    );
+    // Query for the entire `use` declaration. We will match against its text content.
+    queries.insert(
+        PredicateKey::Import,
+        "
+        (use_declaration) @match
+        "
+        .to_string(),
+    );
+
+    LanguageProfile { language, queries }
+}
+
+/// The evaluator that uses tree-sitter to perform code-aware queries.
+#[derive(Debug)]
+pub struct CodeAwareEvaluator;
+
+impl PredicateEvaluator for CodeAwareEvaluator {
+    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool> {
+        // 1. Determine the language from the file extension.
+        let extension = context.path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        let profile = match LANGUAGE_PROFILES.get(extension) {
+            Some(p) => p,
+            None => return Ok(false), // Not a supported language for this predicate.
+        };
+
+        // 2. Get the tree-sitter query string for the specific predicate.
+        let ts_query_str = match profile.queries.get(key) {
+            Some(q) if !q.is_empty() => q,
+            _ => return Ok(false), // This predicate is not implemented for this language yet.
+        };
+
+        // 3. Get content and lazily get the parsed tree from the file context.
+        // We get content first to avoid mutable/immutable borrow issues with context.
+        let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
+        let tree = context.get_tree(profile.language.clone())?;
+
+        // 4. Compile the tree-sitter query.
+        let query = Query::new(&profile.language, ts_query_str)
+            .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
+        let mut cursor = QueryCursor::new();
+
+        // 5. Execute the query and check for a match.
+        let captures = cursor.matches(&query, tree.root_node(), content.as_bytes());
+
+        for m in captures {
+            for capture in m.captures {
+                // We only care about nodes captured with the name `@match`.
+                let capture_name = &query.capture_names()[capture.index as usize];
+                if *capture_name == "match" {
+                    let captured_node = capture.node;
+                    let captured_text = captured_node.utf8_text(content.as_bytes())?;
+
+                    // `import:` uses substring matching, `def:` and `func:` use exact matching.
+                    let is_match = if key == &PredicateKey::Import {
+                        captured_text.contains(value)
+                    } else {
+                        captured_text == value
+                    };
+
+                    if is_match {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+}
+
+// END rdump/src/predicates/code_aware.rs
+
 // START rdump/src/predicates/mod.rs
+
+pub mod code_aware;
 
 use crate::evaluator::FileContext;
 use crate::parser::PredicateKey;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime};
+use self::code_aware::CodeAwareEvaluator;
 
 // The core trait that all predicate evaluators must implement.
 pub trait PredicateEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool>;
+    // The key is now passed to allow one evaluator to handle multiple predicate types.
+    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool>;
 }
 
 // --- Concrete Implementations ---
 
 struct ExtEvaluator;
 impl PredicateEvaluator for ExtEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
         let file_ext = context.path.extension().and_then(|s| s.to_str()).unwrap_or("");
         Ok(file_ext.eq_ignore_ascii_case(value))
     }
@@ -1441,7 +1425,7 @@ impl PredicateEvaluator for ExtEvaluator {
 
 struct PathEvaluator;
 impl PredicateEvaluator for PathEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
         let path_str = context.path.to_string_lossy();
         Ok(path_str.contains(value))
     }
@@ -1449,7 +1433,7 @@ impl PredicateEvaluator for PathEvaluator {
 
 struct NameEvaluator;
 impl PredicateEvaluator for NameEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
         let file_name = context.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         let pattern = glob::Pattern::new(value)?;
         Ok(pattern.matches(file_name))
@@ -1458,7 +1442,7 @@ impl PredicateEvaluator for NameEvaluator {
 
 struct ContainsEvaluator;
 impl PredicateEvaluator for ContainsEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
         let content = context.get_content()?;
         Ok(content.contains(value))
     }
@@ -1466,7 +1450,7 @@ impl PredicateEvaluator for ContainsEvaluator {
 
 struct MatchesEvaluator;
 impl PredicateEvaluator for MatchesEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
         let content = context.get_content()?;
         let re = regex::Regex::new(value)?;
         Ok(re.is_match(content))
@@ -1475,7 +1459,7 @@ impl PredicateEvaluator for MatchesEvaluator {
 
 struct SizeEvaluator;
 impl PredicateEvaluator for SizeEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
         let metadata = context.path.metadata()?;
         let file_size = metadata.len();
         parse_and_compare_size(file_size, value)
@@ -1484,73 +1468,83 @@ impl PredicateEvaluator for SizeEvaluator {
 
 struct ModifiedEvaluator;
 impl PredicateEvaluator for ModifiedEvaluator {
-    fn evaluate(&self, context: &mut FileContext, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, _key: &PredicateKey, value: &str) -> Result<bool> {
         let metadata = context.path.metadata()?;
         let modified_time = metadata.modified()?;
         parse_and_compare_time(modified_time, value)
     }
 }
 
-// --- HELPER FUNCTIONS (moved from evaluator.rs) ---
+fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
+    let (op, size_str) = query.split_at(1);
+    let target_size = size_str
+        .trim()
+        .to_lowercase()
+        .replace("kb", " * 1024")
+        .replace("mb", " * 1024 * 1024")
+        .replace("gb", " * 1024 * 1024 * 1024");
 
-fn parse_and_compare_size(file_size: u64, value: &str) -> Result<bool> {
-    if value.len() < 2 {
-        return Err(anyhow!("Invalid size format. Expected <op><num>[unit], e.g., '>10kb'"));
-    }
-    let op = value.chars().next().unwrap();
-    let rest = &value[1..];
-    let numeric_part_end = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
-    let (num_str, unit_str) = rest.split_at(numeric_part_end);
-    let num: f64 = num_str.parse()?;
-    let multiplier = match unit_str.trim().to_lowercase().as_str() {
-        "" | "b" => 1.0,
-        "k" | "kb" => 1024.0,
-        "m" | "mb" => 1024.0 * 1024.0,
-        "g" | "gb" => 1024.0 * 1024.0 * 1024.0,
-        _ => return Err(anyhow!("Invalid size unit: '{}'", unit_str)),
-    };
-    let target_size = (num * multiplier) as u64;
+    // A simple expression evaluator for "N * N * N..."
+    let target_size_bytes = target_size
+        .split('*')
+        .map(|s| s.trim().parse::<f64>())
+        .collect::<Result<Vec<f64>, _>>()?
+        .into_iter()
+        .product::<f64>() as u64;
+
     match op {
-        '>' => Ok(file_size > target_size),
-        '<' => Ok(file_size < target_size),
-        _ => Err(anyhow!("Invalid size operator: '{}'", op)),
+        ">" => Ok(file_size > target_size_bytes),
+        "<" => Ok(file_size < target_size_bytes),
+        "=" => Ok(file_size == target_size_bytes),
+        _ => Err(anyhow!("Invalid size operator: {}", op)),
     }
 }
 
-fn parse_and_compare_time(modified_time: SystemTime, value: &str) -> Result<bool> {
-    let (op, duration_str) = value.split_at(1);
+fn parse_and_compare_time(modified_time: SystemTime, query: &str) -> Result<bool> {
     let now = SystemTime::now();
-    let (num_str, unit) = duration_str.split_at(duration_str.len() - 1);
-    let num: u64 = num_str.parse()?;
-    let duration = match unit {
-        "s" => Duration::from_secs(num),
-        "m" => Duration::from_secs(num * 60),
-        "h" => Duration::from_secs(num * 3600),
-        "d" => Duration::from_secs(num * 3600 * 24),
-        "w" => Duration::from_secs(num * 3600 * 24 * 7),
-        _ => return Err(anyhow!("Invalid time unit: '{}'", unit)),
+    let (op, duration_str) = query.split_at(1);
+    let duration_str = duration_str.trim();
+
+    let duration_secs = if let Some(num_str) = duration_str.strip_suffix('s') {
+        num_str.parse::<u64>()?
+    } else if let Some(num_str) = duration_str.strip_suffix('m') {
+        num_str.parse::<u64>()? * 60
+    } else if let Some(num_str) = duration_str.strip_suffix('h') {
+        num_str.parse::<u64>()? * 3600
+    } else if let Some(num_str) = duration_str.strip_suffix('d') {
+        num_str.parse::<u64>()? * 86400
+    } else {
+        return Err(anyhow!("Invalid time unit in '{}'", query));
     };
-    let cutoff_time = now - duration;
+
+    let duration = Duration::from_secs(duration_secs);
+    let threshold_time = now.checked_sub(duration).ok_or(anyhow!("Time calculation underflow"))?;
+
     match op {
-        ">" => Ok(modified_time > cutoff_time),
-        "<" => Ok(modified_time < cutoff_time),
-        _ => Err(anyhow!("Invalid time operator: '{}'", op)),
+        ">" => Ok(modified_time > threshold_time), // Modified more recently than
+        "<" => Ok(modified_time < threshold_time), // Modified longer ago than
+        _ => Err(anyhow!("Invalid time operator: {}", op)),
     }
 }
 
-// The "Registry" that holds all our evaluators.
+/// Creates and populates the predicate registry.
 pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
-    let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> = HashMap::new();
+    let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> =
+        HashMap::new();
 
-    // The `Send + Sync` bounds are required because we use this in a multi-threaded
-    // context with Rayon. All our current evaluators are safe.
     registry.insert(PredicateKey::Ext, Box::new(ExtEvaluator));
-    registry.insert(PredicateKey::Path, Box::new(PathEvaluator));
     registry.insert(PredicateKey::Name, Box::new(NameEvaluator));
+    registry.insert(PredicateKey::Path, Box::new(PathEvaluator));
     registry.insert(PredicateKey::Contains, Box::new(ContainsEvaluator));
     registry.insert(PredicateKey::Matches, Box::new(MatchesEvaluator));
     registry.insert(PredicateKey::Size, Box::new(SizeEvaluator));
     registry.insert(PredicateKey::Modified, Box::new(ModifiedEvaluator));
+
+    // Register the single CodeAwareEvaluator for all semantic predicate keys.
+    // It's a stateless struct, so creating multiple boxes is cheap.
+    registry.insert(PredicateKey::Def, Box::new(CodeAwareEvaluator));
+    registry.insert(PredicateKey::Func, Box::new(CodeAwareEvaluator));
+    registry.insert(PredicateKey::Import, Box::new(CodeAwareEvaluator));
 
     registry
 }
@@ -1558,28 +1552,25 @@ pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEva
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluator::FileContext;
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(content.as_bytes()).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
         file
     }
 
     #[test]
     fn test_size_evaluator() {
-        let content: Vec<u8> = vec![0; 1024]; // Exactly 1 KB
-        let file = create_temp_file("");
-        file.as_file().write_all(&content).unwrap();
+        let file = create_temp_file("a".repeat(2000).as_str());
         let mut context = FileContext::new(file.path().to_path_buf());
 
         let evaluator = SizeEvaluator;
-        assert!(evaluator.evaluate(&mut context, ">1000").unwrap());
-        assert!(!evaluator.evaluate(&mut context, "<1kb").unwrap());
-        assert!(evaluator.evaluate(&mut context, ">0.9kb").unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Size, ">1000").unwrap());
+        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Size, "<1kb").unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Size, ">0.9kb").unwrap());
     }
 
     #[test]
@@ -1589,33 +1580,33 @@ mod tests {
 
         let evaluator = ModifiedEvaluator;
         // File was just created
-        assert!(evaluator.evaluate(&mut context, ">1m").unwrap()); // Modified more recently than 1 min ago
-        assert!(!evaluator.evaluate(&mut context, "<1m").unwrap()); // Not modified longer than 1 min ago
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Modified, ">1m").unwrap()); // Modified more recently than 1 min ago
+        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Modified, "<1m").unwrap()); // Not modified longer than 1 min ago
     }
 
     #[test]
     fn test_ext_evaluator() {
-        let mut context_rs = FileContext::new(PathBuf::from("/tmp/test.rs"));
-        let mut context_toml = FileContext::new(PathBuf::from("C:\\data\\Config.TOML"));
-        let mut context_no_ext = FileContext::new(PathBuf::from("no_extension"));
+        let mut context_rs = FileContext::new(PathBuf::from("main.rs"));
+        let mut context_toml = FileContext::new(PathBuf::from("Cargo.TOML"));
+        let mut context_no_ext = FileContext::new(PathBuf::from("README"));
         let mut context_dotfile = FileContext::new(PathBuf::from(".bashrc"));
 
         let evaluator = ExtEvaluator;
-        assert!(evaluator.evaluate(&mut context_rs, "rs").unwrap());
-        assert!(!evaluator.evaluate(&mut context_rs, "toml").unwrap());
-        assert!(evaluator.evaluate(&mut context_toml, "toml").unwrap(), "Should be case-insensitive");
-        assert!(!evaluator.evaluate(&mut context_no_ext, "rs").unwrap());
-        assert!(!evaluator.evaluate(&mut context_dotfile, "bashrc").unwrap(), "Dotfiles should have no extension");
+        assert!(evaluator.evaluate(&mut context_rs, &PredicateKey::Ext, "rs").unwrap());
+        assert!(!evaluator.evaluate(&mut context_rs, &PredicateKey::Ext, "toml").unwrap());
+        assert!(evaluator.evaluate(&mut context_toml, &PredicateKey::Ext, "toml").unwrap(), "Should be case-insensitive");
+        assert!(!evaluator.evaluate(&mut context_no_ext, &PredicateKey::Ext, "rs").unwrap());
+        assert!(!evaluator.evaluate(&mut context_dotfile, &PredicateKey::Ext, "bashrc").unwrap(), "Dotfiles should have no extension");
     }
 
     #[test]
     fn test_path_evaluator() {
         let mut context = FileContext::new(PathBuf::from("/home/user/project/src/main.rs"));
         let evaluator = PathEvaluator;
-        assert!(evaluator.evaluate(&mut context, "project/src").unwrap());
-        assert!(evaluator.evaluate(&mut context, "/home/user").unwrap());
-        assert!(!evaluator.evaluate(&mut context, "project/lib").unwrap());
-        assert!(evaluator.evaluate(&mut context, "main.rs").unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Path, "project/src").unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Path, "/home/user").unwrap());
+        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Path, "project/lib").unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Path, "main.rs").unwrap());
     }
 
     #[test]
@@ -1624,10 +1615,10 @@ mod tests {
         let mut context2 = FileContext::new(PathBuf::from("/home/user/main.rs"));
 
         let evaluator = NameEvaluator;
-        assert!(evaluator.evaluate(&mut context1, "Cargo.toml").unwrap());
-        assert!(evaluator.evaluate(&mut context1, "C*.toml").unwrap(), "Glob pattern should match");
-        assert!(evaluator.evaluate(&mut context2, "*.rs").unwrap(), "Glob pattern should match");
-        assert!(!evaluator.evaluate(&mut context1, "*.rs").unwrap());
+        assert!(evaluator.evaluate(&mut context1, &PredicateKey::Name, "Cargo.toml").unwrap());
+        assert!(evaluator.evaluate(&mut context1, &PredicateKey::Name, "C*.toml").unwrap(), "Glob pattern should match");
+        assert!(evaluator.evaluate(&mut context2, &PredicateKey::Name, "*.rs").unwrap(), "Glob pattern should match");
+        assert!(!evaluator.evaluate(&mut context1, &PredicateKey::Name, "*.rs").unwrap());
     }
 
     #[test]
@@ -1635,9 +1626,9 @@ mod tests {
         let file = create_temp_file("Hello world\nThis is a test.");
         let mut context = FileContext::new(file.path().to_path_buf());
         let evaluator = ContainsEvaluator;
-        assert!(evaluator.evaluate(&mut context, "world").unwrap());
-        assert!(evaluator.evaluate(&mut context, "is a test").unwrap());
-        assert!(!evaluator.evaluate(&mut context, "goodbye").unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Contains, "world").unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Contains, "is a test").unwrap());
+        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Contains, "goodbye").unwrap());
     }
 
     #[test]
@@ -1646,13 +1637,69 @@ mod tests {
         let mut context = FileContext::new(file.path().to_path_buf());
         let evaluator = MatchesEvaluator;
         // Simple regex
-        assert!(evaluator.evaluate(&mut context, r#"version = "[0-9]+\.[0-9]+\.[0-9]+""#).unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Matches, "version = \"[0-9]+\\.[0-9]+\\.[0-9]+\"").unwrap());
         // Test regex that spans lines
-        assert!(evaluator.evaluate(&mut context, r#"(?s)version.*author"#).unwrap());
-        assert!(!evaluator.evaluate(&mut context, r#"^version = "1.0.0"$"#).unwrap());
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Matches, "(?s)version.*author").unwrap());
+        assert!(!evaluator.evaluate(&mut context, &PredicateKey::Matches, "^version = \"1.0.0\"$").unwrap());
+    }
+
+    #[test]
+    fn test_code_aware_evaluator_rust_def() {
+        let rust_code = "struct User; enum Role {}";
+
+        // Create a temp file with a .rs extension
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("code.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(rust_code.as_bytes()).unwrap();
+
+        let mut context = FileContext::new(file_path.clone());
+        let evaluator = CodeAwareEvaluator;
+
+        // Test successful matches
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Def, "User").unwrap(), "Should find struct User");
+
+        // Reset context for the next evaluation on the same file
+        let mut context = FileContext::new(file_path);
+        assert!(evaluator.evaluate(&mut context, &PredicateKey::Def, "Role").unwrap(), "Should find enum Role");
+    }
+
+    #[test]
+    fn test_code_aware_evaluator_full_rust_suite() {
+        let rust_code = "\n            use std::collections::HashMap;\n            use serde::{Serialize, Deserialize};\n\n            struct AppConfig {}\n            trait Runnable {\n                fn run(&self);\n            }\n            fn launch_app() {}\n        ";
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("complex.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(rust_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        // --- Test Definitions ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "AppConfig").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Runnable").unwrap());
+
+        // --- Test Functions ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "run").unwrap(), "Should find trait method");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "launch_app").unwrap(), "Should find standalone function");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Func, "AppConfig").unwrap());
+
+        // --- Test Imports ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "std::collections").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "serde").unwrap(), "Should match part of a use statement");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "Serialize").unwrap(), "Should match item in a use list");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "anyhow").unwrap());
     }
 }
-
 
 // END rdump/src/predicates/mod.rs
 
