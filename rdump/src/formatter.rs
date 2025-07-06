@@ -169,14 +169,16 @@ fn print_hunks_format(
                 if i > 0 {
                     writeln!(writer, "...")?;
                 }
-                let hunk_content = lines[range.clone()].join("\n");
-                print_content_with_style(
-                    writer,
-                    &hunk_content,
-                    extension,
-                    with_line_numbers,
-                    use_color,
-                )?;
+                writeln!(writer, "```{}", extension)?;
+                for line_num in range.clone() {
+                    if let Some(line) = lines.get(line_num) {
+                        if with_line_numbers {
+                            write!(writer, "{: >5} | ", line_num + 1)?;
+                        }
+                        writeln!(writer, "{}", line)?;
+                    }
+                }
+                writeln!(writer, "```")?;
             }
         }
     }

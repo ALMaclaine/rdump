@@ -33,7 +33,13 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         // 3. Get content and lazily get the parsed tree from the file context.
         // We get content first to avoid mutable/immutable borrow issues with context.
         let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
-        let tree = context.get_tree(profile.language.clone())?;
+        let tree = match context.get_tree(profile.language.clone()) {
+            Ok(tree) => tree,
+            Err(e) => {
+                eprintln!("Warning: Failed to parse {}: {}. Skipping.", context.path.display(), e);
+                return Ok(MatchResult::Boolean(false));
+            }
+        };
 
         // 4. Compile the tree-sitter query.
         let query = Query::new(&profile.language, ts_query_str)
