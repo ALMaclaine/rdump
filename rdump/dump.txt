@@ -182,6 +182,7 @@ use tree_sitter::Range;
 use crate::evaluator::{Evaluator, FileContext, MatchResult};
 use crate::formatter;
 use crate::parser;
+use crate::predicates;
 
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
@@ -208,12 +209,32 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         ));
     }
 
-    // --- 1. Find candidates ---
+    // --- 1. Find initial candidates ---
     let candidate_files =
         get_candidate_files(&args.root, args.no_ignore, args.hidden, args.max_depth)?;
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
+
+    // --- 3. Pre-filtering Pass (Metadata) ---
+    // This pass uses a special evaluator with only fast metadata predicates.
+    // It quickly reduces the number of files needing full evaluation.
+    let metadata_registry = predicates::create_metadata_predicate_registry();
+    let pre_filter_evaluator = Evaluator::new(ast.clone(), metadata_registry);
+
+    let pre_filtered_files: Vec<PathBuf> = candidate_files
+        .into_iter() // This pass is not parallel, it's fast enough.
+        .filter(|path| {
+            let mut context = FileContext::new(path.clone());
+            match pre_filter_evaluator.evaluate(&mut context) {
+                Ok(result) => result.is_match(),
+                Err(e) => {
+                    eprintln!("Error during pre-filter on {}: {}", path.display(), e);
+                    false
+                }
+            }
+        })
+        .collect();
 
     // --- Determine if color should be used ---
     let use_color = match args.color {
@@ -222,18 +243,17 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         ColorChoice::Auto => atty::is(Stream::Stdout),
     };
 
-    // --- 3. Evaluate files ---
-    let evaluator = Evaluator::new(ast);
-    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = candidate_files
+    // --- 4. Main Evaluation Pass (Content + Semantic) ---
+    // This pass uses the full evaluator on the smaller, pre-filtered set of files.
+    let full_registry = predicates::create_predicate_registry();
+    let evaluator = Evaluator::new(ast, full_registry);
+
+    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = pre_filtered_files
         .par_iter()
         .filter_map(|path| {
             let mut context = FileContext::new(path.clone());
             match evaluator.evaluate(&mut context) {
-                Ok(MatchResult::Boolean(true)) => {
-                    // For boolean matches, we don't have specific hunks, so we pass an empty Vec.
-                    // The formatter will treat this as "the whole file".
-                    Some((path.clone(), Vec::new()))
-                }
+                Ok(MatchResult::Boolean(true)) => Some((path.clone(), Vec::new())),
                 Ok(MatchResult::Boolean(false)) => None,
                 Ok(MatchResult::Hunks(hunks)) => {
                     if hunks.is_empty() {
@@ -252,7 +272,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     matching_files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // --- 4. Format and print results ---
+    // --- 5. Format and print results ---
     let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
         Box::new(File::create(output_path)?)
     } else {
@@ -265,6 +285,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &args.format,
         args.line_numbers,
         use_color,
+        args.context.unwrap_or(0),
     )?;
 
     Ok(())
@@ -284,7 +305,6 @@ fn get_candidate_files(
 
     if !no_ignore {
         // Layer 1: Our "sane defaults". These have the lowest precedence.
-        // A user can override these with `!` in their own ignore files.
         let default_ignores = "
            # Default rdump ignores
            node_modules/
@@ -311,10 +331,9 @@ fn get_candidate_files(
         }
 
         // Layer 3: A user's custom project-local .rdumpignore file.
-        // This has high precedence.
         walker_builder.add_custom_ignore_filename(".rdumpignore");
 
-        // Layer 4: Standard .gitignore files, which have the highest project-specific precedence.
+        // Layer 4: Standard .gitignore files.
         walker_builder.git_global(true);
         walker_builder.git_ignore(true);
     } else {
@@ -331,18 +350,13 @@ fn get_candidate_files(
     Ok(files)
 }
 
-// Add to the bottom of rdump/src/commands/search.rs
-
 #[cfg(test)]
 mod tests {
-    // ... (existing tests are unchanged)
-    // ...
     use super::*;
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
 
-    // Helper to run get_candidate_files and return a sorted list of file names
     fn get_sorted_file_names(
         root: &PathBuf,
         no_ignore: bool,
@@ -362,11 +376,6 @@ mod tests {
             .collect()
     }
 
-    // ... (existing test functions)
-
-    // ... (existing tests are unchanged)
-    // ...
-    // ... existing tests ...
     #[test]
     fn test_custom_rdumpignore_file() {
         let dir = tempdir().unwrap();
@@ -382,21 +391,17 @@ mod tests {
 
     #[test]
     fn test_unignore_via_rdumpignore() {
-        // This test verifies that a user can override our "sane defaults".
         let dir = tempdir().unwrap();
         let root = dir.path();
 
-        // Create a node_modules dir, which is ignored by default.
         let node_modules = root.join("node_modules");
         fs::create_dir(&node_modules).unwrap();
         fs::File::create(node_modules.join("some_dep.js")).unwrap();
         fs::File::create(root.join("app.js")).unwrap();
 
-        // Create an ignore file that explicitly re-includes node_modules.
         let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
         writeln!(ignore_file, "!node_modules/").unwrap();
 
-        // Run the search. Both files should now be found.
         let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
         assert_eq!(files.len(), 2);
         assert!(files.contains(&"app.js".to_string()));
@@ -407,6 +412,7 @@ mod tests {
         ));
     }
 }
+
 
 // END rdump/src/commands/search.rs
 
@@ -593,7 +599,7 @@ use std::path::PathBuf;
 use tree_sitter::{Parser as TreeSitterParser, Range, Tree};
 
 use crate::parser::{AstNode, PredicateKey};
-use crate::predicates::{create_predicate_registry, PredicateEvaluator};
+use crate::predicates::PredicateEvaluator;
 
 /// The result of an evaluation for a single file.
 #[derive(Debug, Clone)]
@@ -659,11 +665,11 @@ pub struct Evaluator {
 }
 
 impl Evaluator {
-    pub fn new(ast: AstNode) -> Self {
-        Evaluator {
-            ast,
-            registry: create_predicate_registry(),
-        }
+    pub fn new(
+        ast: AstNode,
+        registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>>,
+    ) -> Self {
+        Evaluator { ast, registry }
     }
 
     /// Evaluates the query for a given file path.
@@ -709,8 +715,18 @@ impl Evaluator {
                     }
                 }
             }
-            AstNode::Not(node) => {
-                let result = self.evaluate_node(node, context)?;
+            AstNode::Not(inner_node) => {
+                // For the pre-filtering pass, if the inner predicate of a NOT is not in the
+                // registry, we cannot definitively say the file *doesn't* match.
+                // For example, for `!contains:foo`, the pre-filter doesn't know the content.
+                // So, we must assume it *could* match and let the full evaluator decide.
+                if let AstNode::Predicate(key, _) = &**inner_node {
+                    if !self.registry.contains_key(key) {
+                        return Ok(MatchResult::Boolean(true)); // Pass to the next stage
+                    }
+                }
+                // Otherwise, evaluate the inner node and negate the result.
+                let result = self.evaluate_node(inner_node, context)?;
                 Ok(MatchResult::Boolean(!result.is_match()))
             }
         }
@@ -726,8 +742,10 @@ impl Evaluator {
         if let Some(evaluator) = self.registry.get(key) {
             evaluator.evaluate(context, key, value)
         } else {
-            // Handle unknown or unimplemented predicates gracefully.
-            Ok(MatchResult::Boolean(false))
+            // If a predicate is not in the current registry (e.g., a content predicate
+            // during the metadata-only pass), it's considered a "pass" for this stage.
+            // The full evaluator in the next stage will make the final decision.
+            Ok(MatchResult::Boolean(true))
         }
     }
 }
@@ -761,6 +779,7 @@ impl MatchResult {
 mod tests {
     use super::*;
     use crate::parser::parse_query;
+    use crate::predicates;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -775,7 +794,7 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("contains:world").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
     }
 
@@ -784,11 +803,11 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("contains:hello & contains:world").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
 
         let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail);
+        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
         assert!(!evaluator_fail
             .evaluate(&mut context)
             .unwrap()
@@ -800,11 +819,11 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("contains:hello | contains:goodbye").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
 
         let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail);
+        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
         assert!(!evaluator_fail
             .evaluate(&mut context)
             .unwrap()
@@ -816,17 +835,18 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("!contains:goodbye").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
 
         let ast_fail = parse_query("!contains:hello").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail);
+        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
         assert!(!evaluator_fail
             .evaluate(&mut context)
             .unwrap()
             .is_match());
     }
 }
+
 
 // END rdump/src/evaluator.rs
 
@@ -838,6 +858,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+use std::ops::Range as StdRange;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt; // For Unix permissions
 use std::path::PathBuf;
@@ -867,6 +888,7 @@ pub fn print_output(
     format: &Format,
     with_line_numbers: bool,
     use_color: bool,
+    context_lines: usize,
 ) -> Result<()> {
     match format {
         Format::Find => {
@@ -965,39 +987,19 @@ pub fn print_output(
                 let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
                 if hunks.is_empty() {
-                    // This was a boolean match, print the whole file
-                    if use_color {
-                        print_highlighted_content(writer, &content, extension, with_line_numbers)?;
-                    } else {
-                        print_markdown_fenced_content(
-                            writer,
-                            &content,
-                            extension,
-                            with_line_numbers,
-                        )?;
-                    }
+                    // Boolean match, print the whole file
+                    print_content_with_style(writer, &content, extension, with_line_numbers, use_color)?;
                 } else {
-                    // This was a hunk match, print only the matched ranges
-                    let content_bytes = content.as_bytes();
-                    for hunk_range in hunks {
-                        let hunk_content =
-                            &content_bytes[hunk_range.start_byte..hunk_range.end_byte];
-                        let hunk_str = std::str::from_utf8(hunk_content)?;
-                        if use_color {
-                            print_highlighted_content(
-                                writer,
-                                hunk_str,
-                                extension,
-                                with_line_numbers,
-                            )?;
-                        } else {
-                            print_markdown_fenced_content(
-                                writer,
-                                hunk_str,
-                                extension,
-                                with_line_numbers,
-                            )?;
+                    // Hunk match, print with context
+                    let lines: Vec<&str> = content.lines().collect();
+                    let line_ranges = get_contextual_line_ranges(hunks, &lines, context_lines);
+
+                    for (i, range) in line_ranges.iter().enumerate() {
+                        if i > 0 {
+                            writeln!(writer, "...")?;
                         }
+                        let hunk_content = lines[range.clone()].join("\n");
+                        print_content_with_style(writer, &hunk_content, extension, with_line_numbers, use_color)?;
                     }
                 }
             }
@@ -1005,6 +1007,65 @@ pub fn print_output(
     }
     Ok(())
 }
+
+
+/// Helper to choose the correct printing function based on color/style preference.
+fn print_content_with_style(
+    writer: &mut impl Write,
+    content: &str,
+    extension: &str,
+    with_line_numbers: bool,
+    use_color: bool,
+) -> Result<()> {
+    if use_color {
+        print_highlighted_content(writer, content, extension, with_line_numbers)
+    } else {
+        print_markdown_fenced_content(writer, content, extension, with_line_numbers)
+    }
+}
+
+/// Given a set of byte-offset ranges, calculate the line number ranges including context,
+/// and merge any overlapping ranges.
+fn get_contextual_line_ranges(
+    hunks: &[Range],
+    lines: &[&str],
+    context_lines: usize,
+) -> Vec<StdRange<usize>> {
+    if hunks.is_empty() {
+        return vec![];
+    }
+
+    let mut line_ranges = Vec::new();
+    for hunk in hunks {
+        let start_line = hunk.start_point.row;
+        let end_line = hunk.end_point.row;
+
+        let context_start = start_line.saturating_sub(context_lines);
+        let context_end = (end_line + context_lines).min(lines.len().saturating_sub(1));
+
+        if context_end >= context_start {
+            line_ranges.push(context_start..context_end + 1);
+        }
+    }
+    line_ranges.sort_by_key(|r| r.start);
+
+    // Merge overlapping ranges
+    let mut merged_ranges = Vec::new();
+    let mut iter = line_ranges.into_iter();
+    if let Some(mut current) = iter.next() {
+        for next in iter {
+            if next.start <= current.end {
+                current.end = current.end.max(next.end);
+            } else {
+                merged_ranges.push(current);
+                current = next;
+            }
+        }
+        merged_ranges.push(current);
+    }
+    merged_ranges
+}
+
 
 /// Prints syntax-highlighted content to the writer.
 fn print_highlighted_content(
@@ -1126,7 +1187,7 @@ mod tests {
         let file = create_temp_file_with_content("a\nb");
         let paths = vec![(file.path().to_path_buf(), vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, true, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, true, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         assert_eq!(output, "    1 | a\n    2 | b\n");
     }
@@ -1140,7 +1201,7 @@ mod tests {
             (file2.path().to_path_buf(), vec![]),
         ];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Paths, false, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Paths, false, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         let expected = format!("{}\n{}\n", file1.path().display(), file2.path().display());
         assert_eq!(output, expected);
@@ -1153,7 +1214,7 @@ mod tests {
         let mut writer = Vec::new();
 
         // Test with use_color = false to get markdown fences
-        print_output(&mut writer, &paths, &Format::Markdown, false, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Markdown, false, false, 0).unwrap();
 
         let output = String::from_utf8(writer).unwrap();
 
@@ -1169,10 +1230,10 @@ mod tests {
         // Give it a .rs extension so syntect can find the grammar
         let rs_path = file.path().with_extension("rs");
         std::fs::rename(file.path(), &rs_path).unwrap();
-        
+
         let paths = vec![(rs_path, vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, false, true).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, false, true, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
 
         // Check for evidence of ANSI color, not the exact codes which can be brittle.
@@ -1283,7 +1344,7 @@ pub struct SearchArgs {
     pub line_numbers: bool,
     #[arg(long)]
     pub no_headers: bool,
-    #[arg(long, value_enum, default_value_t = Format::Markdown)]
+    #[arg(long, value_enum, default_value_t = Format::Hunks)]
     pub format: Format,
     #[arg(long)]
     pub no_ignore: bool,
@@ -1293,6 +1354,9 @@ pub struct SearchArgs {
     pub color: ColorChoice,
     #[arg(long)]
     pub max_depth: Option<usize>,
+    #[arg(long, short = 'C', value_name = "LINES", help = "Show LINES of context around matches for --format=hunks")]
+    pub context: Option<usize>,
+
 
     /// List files with metadata instead of dumping content.
     #[arg(long)]
@@ -1339,6 +1403,8 @@ pub enum PresetAction {
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Format {
+    /// Show only the specific code blocks ("hunks") that match a semantic query
+    Hunks,
     /// Human-readable markdown with file headers
     Markdown,
     /// Machine-readable JSON
@@ -1349,8 +1415,6 @@ pub enum Format {
     Cat,
     /// `ls`-like output with file metadata
     Find,
-    /// Show only the specific code blocks ("hunks") that match a semantic query
-    Hunks,
 }
 
 /// The main entry point.
@@ -1377,7 +1441,6 @@ fn main() -> Result<()> {
         Commands::Preset(args) => run_preset(args.action),
     }
 }
-
 
 // END rdump/src/main.rs
 
@@ -1478,14 +1541,14 @@ impl From<&str> for PredicateKey {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AstNode {
     Predicate(PredicateKey, String),
     LogicalOp(LogicalOperator, Box<AstNode>, Box<AstNode>),
     Not(Box<AstNode>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum LogicalOperator {
     And,
     Or,
@@ -1553,10 +1616,10 @@ fn build_ast_from_logical_op(pair: Pair<Rule>) -> Result<AstNode> {
 
 fn unescape_value(value: &str) -> String {
     if value.starts_with('"') && value.ends_with('"') {
-        return value[1..value.len() - 1].replace("\"", "\"");
+        return value[1..value.len() - 1].replace("\\\"", "\"");
     }
     if value.starts_with('\'') && value.ends_with('\'') {
-        return value[1..value.len() - 1].replace("\\'", "\'");
+        return value[1..value.len() - 1].replace("\\\'", "'");
     }
     value.to_string()
 }
@@ -1637,8 +1700,8 @@ mod tests {
 
     #[test]
     fn test_unescape_value() {
-        assert_eq!(unescape_value(r#""hello "world"""#), "hello \"world\"");
-        assert_eq!(unescape_value(r#"'hello 'world''"#), "hello 'world'");
+        assert_eq!(unescape_value(r#""hello \"world\"""#), "hello \"world\"");
+        assert_eq!(unescape_value(r#"'hello \'world''"#), "hello 'world'");
         assert_eq!(unescape_value("no_quotes"), "no_quotes");
     }
 
@@ -1703,7 +1766,6 @@ mod tests {
        assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
    }
 }
-
 
 // END rdump/src/parser.rs
 
@@ -1798,17 +1860,20 @@ pub(super) fn create_go_profile() -> LanguageProfile {
     let language = tree_sitter_go::language();
     let mut queries = HashMap::new();
 
+    let type_query = "(type_declaration (type_spec name: (type_identifier) @match))";
+    let func_query = "[ (function_declaration name: (identifier) @match) (method_declaration name: (field_identifier) @match) ]";
+
     // --- Definitions ---
     let struct_query = "(type_declaration (type_spec name: (type_identifier) @match type: (struct_type)))";
     let interface_query = "(type_declaration (type_spec name: (type_identifier) @match type: (interface_type)))";
 
-    queries.insert(PredicateKey::Def, format!("[ {} {} ]", struct_query, interface_query));
+    queries.insert(PredicateKey::Def, [type_query, func_query].join("\n"));
     queries.insert(PredicateKey::Struct, struct_query.to_string());
     queries.insert(PredicateKey::Interface, interface_query.to_string());
-    queries.insert(PredicateKey::Type, "(type_declaration (type_spec name: (type_identifier) @match))".to_string());
+    queries.insert(PredicateKey::Type, type_query.to_string());
 
     // --- Functions & Calls ---
-    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_declaration name: (field_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Func, func_query.to_string());
     queries.insert(PredicateKey::Call, "(call_expression function: [ (identifier) @match (selector_expression field: (field_identifier) @match) ])".to_string());
 
     // --- Other ---
@@ -1823,7 +1888,6 @@ pub(super) fn create_go_profile() -> LanguageProfile {
         queries,
     }
 }
-
 
 // END rdump/src/predicates/code_aware/profiles/go.rs
 
@@ -1879,11 +1943,13 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
     let language = tree_sitter_javascript::language();
     let mut queries = HashMap::new();
 
-    let class_def_query = "(class_declaration name: (identifier) @match)";
-   queries.insert(PredicateKey::Def, class_def_query.to_string());
-   queries.insert(PredicateKey::Class, class_def_query.to_string());
+    let class_query = "(class_declaration name: (identifier) @match)";
+    let func_query = "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]";
 
-    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Def, [class_query, func_query].join("\n"));
+    queries.insert(PredicateKey::Class, class_query.to_string());
+    queries.insert(PredicateKey::Func, func_query.to_string());
+
     queries.insert(
         PredicateKey::Import,
         "(import_statement) @match".to_string(),
@@ -1903,7 +1969,6 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
         queries,
     }
 }
-
 
 // END rdump/src/predicates/code_aware/profiles/javascript.rs
 
@@ -1959,18 +2024,12 @@ pub(super) fn create_python_profile() -> LanguageProfile {
     let language = tree_sitter_python::language();
     let mut queries = HashMap::new();
 
-    let class_def_query = "(class_definition name: (identifier) @match)";
-   queries.insert(PredicateKey::Def, class_def_query.to_string());
-   queries.insert(PredicateKey::Class, class_def_query.to_string());
+    let class_query = "(class_definition name: (identifier) @match)";
+    let func_query = "(function_definition name: (identifier) @match)";
 
-    // Query for function definitions.
-    queries.insert(
-        PredicateKey::Func,
-        "
-        (function_definition name: (identifier) @match)
-        "
-        .to_string(),
-    );
+    queries.insert(PredicateKey::Def, [class_query, func_query].join("\n"));
+    queries.insert(PredicateKey::Class, class_query.to_string());
+    queries.insert(PredicateKey::Func, func_query.to_string());
 
     // Query for `import` and `from ... import` statements.
     queries.insert(
@@ -2009,7 +2068,6 @@ pub(super) fn create_python_profile() -> LanguageProfile {
     }
 }
 
-
 // END rdump/src/predicates/code_aware/profiles/python.rs
 
 // START rdump/src/predicates/code_aware/profiles/rust.rs
@@ -2023,20 +2081,18 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     let language = tree_sitter_rust::language();
     let mut queries = HashMap::new();
 
-    let def_query = r#"
-        (struct_item name: (_) @match)
-        (enum_item name: (_) @match)
-        (trait_item name: (_) @match)
-        "#;
+    let struct_query = "(struct_item name: (_) @match)";
+    let enum_query = "(enum_item name: (_) @match)";
+    let trait_query = "(trait_item name: (_) @match)";
+    let type_query = "(type_item name: (type_identifier) @match)";
 
-    queries.insert(
-        PredicateKey::Def,
-        def_query.to_string(),
-    );
-   queries.insert(PredicateKey::Struct, "(struct_item name: (_) @match)".to_string());
-   queries.insert(PredicateKey::Enum, "(enum_item name: (_) @match)".to_string());
-   queries.insert(PredicateKey::Trait, "(trait_item name: (_) @match)".to_string());
-   queries.insert(PredicateKey::Type, "(type_item name: (type_identifier) @match)".to_string());
+    let def_query = [struct_query, enum_query, trait_query, type_query].join("\n");
+
+    queries.insert(PredicateKey::Def, def_query);
+    queries.insert(PredicateKey::Struct, struct_query.to_string());
+    queries.insert(PredicateKey::Enum, enum_query.to_string());
+    queries.insert(PredicateKey::Trait, trait_query.to_string());
+    queries.insert(PredicateKey::Type, type_query.to_string());
 
     // Query for standalone functions and methods in traits or impls.
     queries.insert(
@@ -2083,7 +2139,6 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     }
 }
 
-
 // END rdump/src/predicates/code_aware/profiles/rust.rs
 
 // START rdump/src/predicates/code_aware/profiles/typescript.rs
@@ -2097,15 +2152,18 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
     let language = tree_sitter_typescript::language_typescript();
     let mut queries = HashMap::new();
 
-    let def_query = "[
-    (class_declaration name: (type_identifier) @match)
-    (interface_declaration name: (type_identifier) @match)
-   ]";
-   queries.insert(PredicateKey::Def, def_query.to_string());
-   queries.insert(PredicateKey::Class, "(class_declaration name: (type_identifier) @match)".to_string());
-   queries.insert(PredicateKey::Interface, "(interface_declaration name: (type_identifier) @match)".to_string());
-   queries.insert(PredicateKey::Type, "(type_alias_declaration name: (type_identifier) @match)".to_string());
-   queries.insert(PredicateKey::Enum, "(enum_declaration name: (type_identifier) @match)".to_string());
+    let class_query = "(class_declaration name: (type_identifier) @match)";
+    let interface_query = "(interface_declaration name: (type_identifier) @match)";
+    let type_query = "(type_alias_declaration name: (type_identifier) @match)";
+    let enum_query = "(enum_declaration name: (identifier) @match)";
+
+    let def_query = [class_query, interface_query, type_query, enum_query].join("\n");
+    queries.insert(PredicateKey::Def, def_query);
+
+    queries.insert(PredicateKey::Class, class_query.to_string());
+    queries.insert(PredicateKey::Interface, interface_query.to_string());
+    queries.insert(PredicateKey::Type, type_query.to_string());
+    queries.insert(PredicateKey::Enum, enum_query.to_string());
 
     queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
     queries.insert(
@@ -2127,7 +2185,6 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
         queries,
     }
 }
-
 
 // END rdump/src/predicates/code_aware/profiles/typescript.rs
 
@@ -2388,7 +2445,6 @@ mod tests {
 
 // START rdump/src/predicates/mod.rs
 
-
 pub mod code_aware;
 pub mod contains;
 pub mod ext;
@@ -2418,22 +2474,31 @@ pub trait PredicateEvaluator {
     fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<MatchResult>;
 }
 
-/// Creates and populates the predicate registry.
-pub fn create_predicate_registry(
-) -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+/// Creates a predicate registry with only the fast, metadata-based predicates.
+/// This is used for the pre-filtering pass.
+pub fn create_metadata_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
     let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> =
         HashMap::new();
 
     registry.insert(PredicateKey::Ext, Box::new(ExtEvaluator));
     registry.insert(PredicateKey::Name, Box::new(NameEvaluator));
     registry.insert(PredicateKey::Path, Box::new(PathEvaluator));
-    registry.insert(PredicateKey::Contains, Box::new(ContainsEvaluator));
-    registry.insert(PredicateKey::Matches, Box::new(MatchesEvaluator));
     registry.insert(PredicateKey::Size, Box::new(SizeEvaluator));
     registry.insert(PredicateKey::Modified, Box::new(ModifiedEvaluator));
 
+    registry
+}
+
+/// Creates and populates the complete predicate registry.
+pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+    // Start with the metadata predicates
+    let mut registry = create_metadata_predicate_registry();
+
+    // Add content-based predicates
+    registry.insert(PredicateKey::Contains, Box::new(ContainsEvaluator));
+    registry.insert(PredicateKey::Matches, Box::new(MatchesEvaluator));
+
     // Register the single CodeAwareEvaluator for all semantic predicate keys.
-    // It's a stateless struct, so cloning the Box is cheap (it's just a pointer clone).
     let code_evaluator = Box::new(CodeAwareEvaluator);
     registry.insert(PredicateKey::Def, code_evaluator.clone());
     registry.insert(PredicateKey::Func, code_evaluator.clone());
@@ -2446,7 +2511,7 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Type, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
     registry.insert(PredicateKey::Str, code_evaluator.clone());
-   registry.insert(PredicateKey::Call, code_evaluator);
+    registry.insert(PredicateKey::Call, code_evaluator);
 
     registry
 }
@@ -2455,10 +2520,9 @@ pub fn create_predicate_registry(
 mod tests {
     use super::*;
     use std::io::Write;
-    
 
-   // The `code_aware` suite remains here as it tests the interaction
-   // of multiple profiles, which is a responsibility of this parent module.
+    // The `code_aware` suite remains here as it tests the interaction
+    // of multiple profiles, which is a responsibility of this parent module.
     #[test]
     fn test_code_aware_evaluator_full_rust_suite() {
         let rust_code = r#"
@@ -2486,29 +2550,62 @@ mod tests {
 
         // --- Granular Defs ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Struct, "AppConfig").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Struct, "AppConfig")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Trait, "Runnable").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Trait, "Runnable")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Type, "ConfigMap").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Type, "ConfigMap")
+            .unwrap()
+            .is_match());
 
         // --- Functions ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "run").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "run")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "launch_app").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "launch_app")
+            .unwrap()
+            .is_match());
 
-       // --- Calls ---
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "println").unwrap().is_match(), "Should find function call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Call, "launch_app").unwrap().is_match(), "Should not find the definition as a call");
+        // --- Calls ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "println")
+                .unwrap()
+                .is_match(),
+            "Should find function call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            !evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "launch_app")
+                .unwrap()
+                .is_match(),
+            "Should not find the definition as a call"
+        );
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "TODO").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "TODO")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "Launching...").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "Launching...")
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -2539,27 +2636,60 @@ def process_data():
 
         // --- Granular Defs ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Class, "DataProcessor").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Class, "DataProcessor")
+            .unwrap()
+            .is_match());
 
         // --- Functions ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "process_data")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "connect").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "connect")
+            .unwrap()
+            .is_match());
 
-       // --- Calls ---
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "print").unwrap().is_match(), "Should find multiple calls to print");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "DataProcessor").unwrap().is_match(), "Should find constructor call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "connect").unwrap().is_match(), "Should find method call");
+        // --- Calls ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "print")
+                .unwrap()
+                .is_match(),
+            "Should find multiple calls to print"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "DataProcessor")
+                .unwrap()
+                .is_match(),
+            "Should find constructor call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "connect")
+                .unwrap()
+                .is_match(),
+            "Should find method call"
+        );
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "FIXME").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "FIXME")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "secret_key").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "secret_key")
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -2585,15 +2715,36 @@ def process_data():
         let evaluator = CodeAwareEvaluator;
 
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Logger").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Def, "Logger")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "log").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "log")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fs/promises").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "Logger").unwrap().is_match(), "Should find constructor call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "log").unwrap().is_match(), "Should find method call");
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "fs/promises")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "Logger")
+                .unwrap()
+                .is_match(),
+            "Should find constructor call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "log")
+                .unwrap()
+                .is_match(),
+            "Should find method call"
+        );
     }
 
     #[test]
@@ -2623,26 +2774,56 @@ def process_data():
 
         // --- Granular Defs ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ApiClient").unwrap().is_match(), "Should find class");
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Def, "ApiClient")
+                .unwrap()
+                .is_match(),
+            "Should find class"
+        );
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "fetchUser").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "fetchUser")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "React").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "ApiClient").unwrap().is_match(), "Should find TS constructor call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "fetchUser").unwrap().is_match(), "Should find TS method call");
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "React")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "ApiClient")
+                .unwrap()
+                .is_match(),
+            "Should find TS constructor call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "fetchUser")
+                .unwrap()
+                .is_match(),
+            "Should find TS method call"
+        );
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "The URL").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "The URL")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "https://api.example.com").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "https://api.example.com")
+            .unwrap()
+            .is_match());
     }
 
-   #[test]
-   fn test_code_aware_evaluator_go_suite() {
-       let go_code = r#"
+    #[test]
+    fn test_code_aware_evaluator_go_suite() {
+        let go_code = r#"
            package main
 
            import "fmt"
@@ -2662,28 +2843,43 @@ def process_data():
            }
        "#;
 
-       let temp_dir = tempfile::tempdir().unwrap();
-       let file_path = temp_dir.path().join("main.go");
-       let mut file = std::fs::File::create(&file_path).unwrap();
-       file.write_all(go_code.as_bytes()).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("main.go");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(go_code.as_bytes()).unwrap();
 
-       let evaluator = CodeAwareEvaluator;
+        let evaluator = CodeAwareEvaluator;
 
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Struct, "User").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "Greet").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "Println").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fmt").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "represents a user").unwrap().is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Struct, "User")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "Greet")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Call, "Println")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "fmt")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "represents a user")
+            .unwrap()
+            .is_match());
     }
 
-   #[test]
-   fn test_code_aware_evaluator_java_suite() {
-       let java_code = r#"
+    #[test]
+    fn test_code_aware_evaluator_java_suite() {
+        let java_code = r#"
            package com.example;
 
            import java.util.List;
@@ -2698,28 +2894,45 @@ def process_data():
            }
        "#;
 
-       let temp_dir = tempfile::tempdir().unwrap();
-       let file_path = temp_dir.path().join("User.java");
-       let mut file = std::fs::File::create(&file_path).unwrap();
-       file.write_all(java_code.as_bytes()).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("User.java");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(java_code.as_bytes()).unwrap();
 
-       let evaluator = CodeAwareEvaluator;
+        let evaluator = CodeAwareEvaluator;
 
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Class, "User").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "greet").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "println").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "java.util.List").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "Represents a user").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "User created").unwrap().is_match());
-   }
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Class, "User")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "greet")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Call, "println")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "java.util.List")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "Represents a user")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "User created")
+            .unwrap()
+            .is_match());
+    }
 }
-
 
 // END rdump/src/predicates/mod.rs
 

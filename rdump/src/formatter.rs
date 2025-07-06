@@ -4,6 +4,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+use std::ops::Range as StdRange;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt; // For Unix permissions
 use std::path::PathBuf;
@@ -33,6 +34,7 @@ pub fn print_output(
     format: &Format,
     with_line_numbers: bool,
     use_color: bool,
+    context_lines: usize,
 ) -> Result<()> {
     match format {
         Format::Find => {
@@ -131,39 +133,19 @@ pub fn print_output(
                 let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
                 if hunks.is_empty() {
-                    // This was a boolean match, print the whole file
-                    if use_color {
-                        print_highlighted_content(writer, &content, extension, with_line_numbers)?;
-                    } else {
-                        print_markdown_fenced_content(
-                            writer,
-                            &content,
-                            extension,
-                            with_line_numbers,
-                        )?;
-                    }
+                    // Boolean match, print the whole file
+                    print_content_with_style(writer, &content, extension, with_line_numbers, use_color)?;
                 } else {
-                    // This was a hunk match, print only the matched ranges
-                    let content_bytes = content.as_bytes();
-                    for hunk_range in hunks {
-                        let hunk_content =
-                            &content_bytes[hunk_range.start_byte..hunk_range.end_byte];
-                        let hunk_str = std::str::from_utf8(hunk_content)?;
-                        if use_color {
-                            print_highlighted_content(
-                                writer,
-                                hunk_str,
-                                extension,
-                                with_line_numbers,
-                            )?;
-                        } else {
-                            print_markdown_fenced_content(
-                                writer,
-                                hunk_str,
-                                extension,
-                                with_line_numbers,
-                            )?;
+                    // Hunk match, print with context
+                    let lines: Vec<&str> = content.lines().collect();
+                    let line_ranges = get_contextual_line_ranges(hunks, &lines, context_lines);
+
+                    for (i, range) in line_ranges.iter().enumerate() {
+                        if i > 0 {
+                            writeln!(writer, "...")?;
                         }
+                        let hunk_content = lines[range.clone()].join("\n");
+                        print_content_with_style(writer, &hunk_content, extension, with_line_numbers, use_color)?;
                     }
                 }
             }
@@ -171,6 +153,65 @@ pub fn print_output(
     }
     Ok(())
 }
+
+
+/// Helper to choose the correct printing function based on color/style preference.
+fn print_content_with_style(
+    writer: &mut impl Write,
+    content: &str,
+    extension: &str,
+    with_line_numbers: bool,
+    use_color: bool,
+) -> Result<()> {
+    if use_color {
+        print_highlighted_content(writer, content, extension, with_line_numbers)
+    } else {
+        print_markdown_fenced_content(writer, content, extension, with_line_numbers)
+    }
+}
+
+/// Given a set of byte-offset ranges, calculate the line number ranges including context,
+/// and merge any overlapping ranges.
+fn get_contextual_line_ranges(
+    hunks: &[Range],
+    lines: &[&str],
+    context_lines: usize,
+) -> Vec<StdRange<usize>> {
+    if hunks.is_empty() {
+        return vec![];
+    }
+
+    let mut line_ranges = Vec::new();
+    for hunk in hunks {
+        let start_line = hunk.start_point.row;
+        let end_line = hunk.end_point.row;
+
+        let context_start = start_line.saturating_sub(context_lines);
+        let context_end = (end_line + context_lines).min(lines.len().saturating_sub(1));
+
+        if context_end >= context_start {
+            line_ranges.push(context_start..context_end + 1);
+        }
+    }
+    line_ranges.sort_by_key(|r| r.start);
+
+    // Merge overlapping ranges
+    let mut merged_ranges = Vec::new();
+    let mut iter = line_ranges.into_iter();
+    if let Some(mut current) = iter.next() {
+        for next in iter {
+            if next.start <= current.end {
+                current.end = current.end.max(next.end);
+            } else {
+                merged_ranges.push(current);
+                current = next;
+            }
+        }
+        merged_ranges.push(current);
+    }
+    merged_ranges
+}
+
 
 /// Prints syntax-highlighted content to the writer.
 fn print_highlighted_content(
@@ -292,7 +333,7 @@ mod tests {
         let file = create_temp_file_with_content("a\nb");
         let paths = vec![(file.path().to_path_buf(), vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, true, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, true, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         assert_eq!(output, "    1 | a\n    2 | b\n");
     }
@@ -306,7 +347,7 @@ mod tests {
             (file2.path().to_path_buf(), vec![]),
         ];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Paths, false, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Paths, false, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         let expected = format!("{}\n{}\n", file1.path().display(), file2.path().display());
         assert_eq!(output, expected);
@@ -319,7 +360,7 @@ mod tests {
         let mut writer = Vec::new();
 
         // Test with use_color = false to get markdown fences
-        print_output(&mut writer, &paths, &Format::Markdown, false, false).unwrap();
+        print_output(&mut writer, &paths, &Format::Markdown, false, false, 0).unwrap();
 
         let output = String::from_utf8(writer).unwrap();
 
@@ -335,10 +376,10 @@ mod tests {
         // Give it a .rs extension so syntect can find the grammar
         let rs_path = file.path().with_extension("rs");
         std::fs::rename(file.path(), &rs_path).unwrap();
-        
+
         let paths = vec![(rs_path, vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, false, true).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, false, true, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
 
         // Check for evidence of ANSI color, not the exact codes which can be brittle.

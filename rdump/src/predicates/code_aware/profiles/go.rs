@@ -7,17 +7,20 @@ pub(super) fn create_go_profile() -> LanguageProfile {
     let language = tree_sitter_go::language();
     let mut queries = HashMap::new();
 
+    let type_query = "(type_declaration (type_spec name: (type_identifier) @match))";
+    let func_query = "[ (function_declaration name: (identifier) @match) (method_declaration name: (field_identifier) @match) ]";
+
     // --- Definitions ---
     let struct_query = "(type_declaration (type_spec name: (type_identifier) @match type: (struct_type)))";
     let interface_query = "(type_declaration (type_spec name: (type_identifier) @match type: (interface_type)))";
 
-    queries.insert(PredicateKey::Def, format!("[ {} {} ]", struct_query, interface_query));
+    queries.insert(PredicateKey::Def, [type_query, func_query].join("\n"));
     queries.insert(PredicateKey::Struct, struct_query.to_string());
     queries.insert(PredicateKey::Interface, interface_query.to_string());
-    queries.insert(PredicateKey::Type, "(type_declaration (type_spec name: (type_identifier) @match))".to_string());
+    queries.insert(PredicateKey::Type, type_query.to_string());
 
     // --- Functions & Calls ---
-    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_declaration name: (field_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Func, func_query.to_string());
     queries.insert(PredicateKey::Call, "(call_expression function: [ (identifier) @match (selector_expression field: (field_identifier) @match) ])".to_string());
 
     // --- Other ---

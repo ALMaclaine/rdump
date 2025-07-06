@@ -93,7 +93,7 @@ pub struct SearchArgs {
     pub line_numbers: bool,
     #[arg(long)]
     pub no_headers: bool,
-    #[arg(long, value_enum, default_value_t = Format::Markdown)]
+    #[arg(long, value_enum, default_value_t = Format::Hunks)]
     pub format: Format,
     #[arg(long)]
     pub no_ignore: bool,
@@ -103,6 +103,9 @@ pub struct SearchArgs {
     pub color: ColorChoice,
     #[arg(long)]
     pub max_depth: Option<usize>,
+    #[arg(long, short = 'C', value_name = "LINES", help = "Show LINES of context around matches for --format=hunks")]
+    pub context: Option<usize>,
+
 
     /// List files with metadata instead of dumping content.
     #[arg(long)]
@@ -149,6 +152,8 @@ pub enum PresetAction {
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Format {
+    /// Show only the specific code blocks ("hunks") that match a semantic query
+    Hunks,
     /// Human-readable markdown with file headers
     Markdown,
     /// Machine-readable JSON
@@ -159,8 +164,6 @@ pub enum Format {
     Cat,
     /// `ls`-like output with file metadata
     Find,
-    /// Show only the specific code blocks ("hunks") that match a semantic query
-    Hunks,
 }
 
 /// The main entry point.

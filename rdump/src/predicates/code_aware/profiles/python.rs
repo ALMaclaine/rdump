@@ -7,18 +7,12 @@ pub(super) fn create_python_profile() -> LanguageProfile {
     let language = tree_sitter_python::language();
     let mut queries = HashMap::new();
 
-    let class_def_query = "(class_definition name: (identifier) @match)";
-   queries.insert(PredicateKey::Def, class_def_query.to_string());
-   queries.insert(PredicateKey::Class, class_def_query.to_string());
+    let class_query = "(class_definition name: (identifier) @match)";
+    let func_query = "(function_definition name: (identifier) @match)";
 
-    // Query for function definitions.
-    queries.insert(
-        PredicateKey::Func,
-        "
-        (function_definition name: (identifier) @match)
-        "
-        .to_string(),
-    );
+    queries.insert(PredicateKey::Def, [class_query, func_query].join("\n"));
+    queries.insert(PredicateKey::Class, class_query.to_string());
+    queries.insert(PredicateKey::Func, func_query.to_string());
 
     // Query for `import` and `from ... import` statements.
     queries.insert(

@@ -116,6 +116,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &args.format,
         args.line_numbers,
         use_color,
+        args.context.unwrap_or(0),
     )?;
 
     Ok(())

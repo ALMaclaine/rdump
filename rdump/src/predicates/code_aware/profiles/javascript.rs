@@ -7,11 +7,13 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
     let language = tree_sitter_javascript::language();
     let mut queries = HashMap::new();
 
-    let class_def_query = "(class_declaration name: (identifier) @match)";
-   queries.insert(PredicateKey::Def, class_def_query.to_string());
-   queries.insert(PredicateKey::Class, class_def_query.to_string());
+    let class_query = "(class_declaration name: (identifier) @match)";
+    let func_query = "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]";
 
-    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Def, [class_query, func_query].join("\n"));
+    queries.insert(PredicateKey::Class, class_query.to_string());
+    queries.insert(PredicateKey::Func, func_query.to_string());
+
     queries.insert(
         PredicateKey::Import,
         "(import_statement) @match".to_string(),
