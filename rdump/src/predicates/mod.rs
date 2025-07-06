@@ -342,5 +342,65 @@ def process_data():
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "argv").unwrap());
         let mut ctx = FileContext::new(file_path.clone());
         assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "numpy").unwrap());
+     }
+
+    #[test]
+    fn test_code_aware_evaluator_javascript_suite() {
+        let js_code = r#"
+            import { open } from 'fs/promises';
+
+            class Logger {
+                log(message) { console.log(message); }
+            }
+
+            function a() { }
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("script.js");
+        file_path.parent().unwrap().to_path_buf().push("script.js");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(js_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Logger").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "log").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fs/promises").unwrap());
+    }
+
+    #[test]
+    fn test_code_aware_evaluator_typescript_suite() {
+        let ts_code = r#"
+            import React from 'react';
+
+            interface User { id: number; }
+            type ID = string | number;
+
+            class ApiClient {
+                fetchUser(): User | null { return null; }
+            }
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("api.ts");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(ts_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "User").unwrap(), "Should find interface");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ID").unwrap(), "Should find type alias");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ApiClient").unwrap(), "Should find class");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "fetchUser").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "React").unwrap());
     }
  }

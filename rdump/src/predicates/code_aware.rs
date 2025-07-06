@@ -13,18 +13,6 @@ struct LanguageProfile {
     queries: HashMap<PredicateKey, String>,
 }
 
-// A static registry of language profiles, loaded at compile time.
-lazy_static! {
-    static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
-        let mut m = HashMap::new();
-        // Phase 2.0: Only Rust is implemented.
-         m.insert("rs", create_rust_profile());
-        // Phase 2.1: Add Python support.
-        m.insert("py", create_python_profile());
-         m
-     };
- }
-
 /// Creates the profile for the Rust language.
 fn create_rust_profile() -> LanguageProfile {
     let language = tree_sitter_rust::language();
@@ -101,6 +89,50 @@ fn create_python_profile() -> LanguageProfile {
 
     LanguageProfile { language, queries }
 }
+
+/// Creates the profile for the JavaScript language.
+fn create_javascript_profile() -> LanguageProfile {
+    let language = tree_sitter_javascript::language();
+    let mut queries = HashMap::new();
+
+    queries.insert(PredicateKey::Def, "(class_declaration name: (identifier) @match)".to_string());
+    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
+
+    LanguageProfile { language, queries }
+}
+
+/// Creates the profile for the TypeScript language.
+fn create_typescript_profile() -> LanguageProfile {
+    let language = tree_sitter_typescript::language_typescript();
+    let mut queries = HashMap::new();
+
+    queries.insert(PredicateKey::Def, "[ (class_declaration name: (type_identifier) @match) (interface_declaration name: (type_identifier) @match) (type_alias_declaration name: (type_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
+
+    LanguageProfile { language, queries }
+}
+
+// A static registry of language profiles, loaded at compile time.
+lazy_static! {
+    static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
+        let mut m = HashMap::new();
+        // Phase 2.0: Only Rust is implemented.
+         m.insert("rs", create_rust_profile());
+        // Phase 2.1: Add Python support.
+        m.insert("py", create_python_profile());
+        // Phase 2.2: Add JS/TS support
+        let ts_profile = create_typescript_profile();
+        m.insert("ts", ts_profile);
+        m.insert("tsx", create_typescript_profile()); // Reuse TS profile for TSX
+
+        let js_profile = create_javascript_profile();
+        m.insert("js", js_profile);
+        m.insert("jsx", create_javascript_profile()); // Reuse JS profile for JSX
+         m
+     };
+ }
 
  /// The evaluator that uses tree-sitter to perform code-aware queries.
  #[derive(Debug)]

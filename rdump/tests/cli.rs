@@ -39,7 +39,7 @@ fn test_help_message() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("--help");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("A fast, expressive tool"))
+        .stdout(predicate::str::contains("A fast, expressive, code-aware tool"))
         .stdout(predicate::str::contains("Usage: rdump <COMMAND>"))
         .stdout(predicate::str::contains("Commands:\n  search"))
         .stdout(predicate::str::contains("  preset"))

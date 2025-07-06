@@ -7,7 +7,7 @@ use std::io::Write;
 use std::process::Command;
 use tempfile::tempdir;
 
-/// A helper to set up a temporary directory with a sample Rust project.
+/// A helper to set up a temporary directory with a multi-language sample project.
 fn setup_test_project() -> tempfile::TempDir {
     let dir = tempdir().unwrap();
     let src_dir = dir.path().join("src");
@@ -55,20 +55,51 @@ pub enum Role {
     let mut readme_md = fs::File::create(dir.path().join("README.md")).unwrap();
      readme_md.write_all(readme_md_content.as_bytes()).unwrap();
 
-    // --- NEW: Add a Python file ---
-    let py_content = r#"
-import os
+    // --- Add a Python file ---
+     let py_content = r#"
+ import os
 
-class Helper:
-    def __init__(self):
-        self.path = os.getcwd()
+ class Helper:
+     def __init__(self):
+         self.path = os.getcwd()
 
-def run_helper():
-    h = Helper()
-    return h.path
+ def run_helper():
+     h = Helper()
+     return h.path
+ "#;
+     let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
+     py_file.write_all(py_content.as_bytes()).unwrap();
+
+    // --- NEW: Add JS and TS files ---
+    let js_content = r#"
+import { a } from './lib';
+
+export class OldLogger {
+    log(msg) { console.log(msg); }
+}
 "#;
-    let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
-    py_file.write_all(py_content.as_bytes()).unwrap();
+    fs::File::create(src_dir.join("logger.js"))
+        .unwrap()
+        .write_all(js_content.as_bytes())
+        .unwrap();
+
+    let ts_content = r#"
+import * as path from 'path';
+
+export interface ILog {
+    message: string;
+}
+
+export type LogLevel = "info" | "warn" | "error";
+
+export function createLog(message: string): ILog {
+    return { message };
+}
+"#;
+    fs::File::create(src_dir.join("log_utils.ts"))
+        .unwrap()
+        .write_all(ts_content.as_bytes())
+        .unwrap();
 
      dir
  }
@@ -250,6 +281,59 @@ fn test_import_finds_python_import() {
         .success()
         .stdout(predicate::str::contains("helper.py"))
         .stdout(predicate::str::contains("import os"))
-        .stdout(predicate::str::contains("src/lib.rs").not());
+         .stdout(predicate::str::contains("src/lib.rs").not());
+ }
+
+#[test]
+fn test_def_finds_javascript_class() {
+    let dir = setup_test_project();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(dir.path());
+    cmd.arg("search").arg("def:OldLogger");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("logger.js"))
+        .stdout(predicate::str::contains("class OldLogger"))
+        .stdout(predicate::str::contains("log_utils.ts").not());
 }
+
+#[test]
+fn test_def_finds_typescript_interface_and_type() {
+    let dir = setup_test_project();
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(dir.path()).arg("search").arg("def:ILog | def:LogLevel");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("log_utils.ts"))
+        .stdout(predicate::str::contains("interface ILog"))
+        .stdout(predicate::str::contains(r#"type LogLevel = "info" | "warn" | "error";"#));
+}
+
+#[test]
+fn test_func_finds_typescript_function() {
+    let dir = setup_test_project();
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(dir.path()).arg("search").arg("func:createLog");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("log_utils.ts"))
+        .stdout(predicate::str::contains("export function createLog"));
+}
+
+#[test]
+fn test_import_finds_typescript_import() {
+    let dir = setup_test_project();
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(dir.path()).arg("search").arg("import:path & ext:ts");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("log_utils.ts"))
+        .stdout(predicate::str::contains("import * as path from 'path';"));
+}
+// END tests/code_aware_search.rs
 // END tests/code_aware_search.rs

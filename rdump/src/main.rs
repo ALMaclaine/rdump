@@ -4,7 +4,7 @@ mod config;
 mod evaluator;
 mod formatter;
 mod parser;
-mod predicates; // <-- NEW
+mod predicates;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -16,7 +16,7 @@ use commands::{preset::run_preset, search::run_search};
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
 #[derive(Parser, Debug)]
-#[command(version, about = "A fast, expressive tool to find and dump file contents.")]
+#[command(version, about = "A fast, expressive, code-aware tool to find and dump file contents.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -34,7 +34,27 @@ pub enum Commands {
 
 #[derive(Parser, Debug, Clone)]
 pub struct SearchArgs {
-    #[arg()]
+    /// The query string to search for, using rdump Query Language (RQL).
+    ///
+    /// RQL supports logical operators (&, |, !), parentheses, and key:value predicates.
+    /// Values with spaces must be quoted (e.g., contains:'fn main').
+    ///
+    /// METADATA PREDICATES:
+    ///   ext:<str>          - File extension (e.g., "rs", "toml")
+    ///   name:<glob>        - File name glob pattern (e.g., "test_*.rs")
+    ///   path:<str>         - Substring in the full file path
+    ///   size:[>|<]<num>[kb|mb] - File size (e.g., ">10kb")
+    ///   modified:[>|<]<num>[h|d|w] - Modified time (e.g., "<2d")
+    ///
+    /// CONTENT PREDICATES:
+    ///   contains:<str>     - Literal string a file contains
+    ///   matches:<regex>    - Regular expression a file's content matches
+    ///
+    /// CODE-AWARE PREDICATES (for Rust, Python):
+    ///   def:<str>          - A definition (class, struct, enum, trait)
+    ///   func:<str>         - A function or method definition
+    ///   import:<str>       - An import or use statement
+    #[arg(verbatim_doc_comment)]
     pub query: Option<String>,
     #[arg(long, short)]
     pub preset: Vec<String>,
@@ -57,7 +77,7 @@ pub struct SearchArgs {
 
     /// List files with metadata instead of dumping content.
     #[arg(long)]
-    pub find: bool, // <-- NEW
+    pub find: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -90,7 +110,7 @@ pub enum Format {
     Json,
     Paths,
     Cat,
-    Find, // <-- NEW
+    Find,
 }
 
 /// The main entry point.
@@ -104,7 +124,6 @@ fn main() -> Result<()> {
             if args.no_headers {
                 args.format = Format::Cat;
             }
-            // NEW: Handle `--find` shorthand
             if args.find {
                 args.format = Format::Find;
             }

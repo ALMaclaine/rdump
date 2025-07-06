@@ -1,10 +1,14 @@
-Of course. Here are the complete changes to add full Python support, validating our extensible architecture.
+Excellent. With the documentation updated, let's proceed with the final phase of our current roadmap: **Phase 2.2 - adding support for JavaScript and TypeScript.**
+
+This will be a substantial change that touches the same files as the Python implementation, demonstrating the power and scalability of our design.
+
+Here is the complete set of changes to implement JavaScript and TypeScript support.
 
 ---
 
 ### **`rdump/Cargo.toml` (Modified)**
 
-I've added the `tree-sitter-python` grammar crate as a new dependency.
+I've added the `tree-sitter-javascript` and `tree-sitter-typescript` grammar crates.
 
 ```diff
  // START rdump/Cargo.toml
@@ -32,7 +36,9 @@ I've added the `tree-sitter-python` grammar crate as a new dependency.
  lazy_static = "1.4.0"
  tree-sitter = "0.22.6"
  tree-sitter-rust = "0.21.0"
-+tree-sitter-python = "0.21.0"
+ tree-sitter-python = "0.21.0"
++tree-sitter-javascript = "0.21.0"
++tree-sitter-typescript = "0.21.0"
 
  [dev-dependencies]
  assert_cmd = "2.0.14"
@@ -44,7 +50,7 @@ I've added the `tree-sitter-python` grammar crate as a new dependency.
 
 ### **`rdump/src/predicates/code_aware.rs` (Modified)**
 
-This is the key architectural validation. I've added a `create_python_profile` and registered it, but the core `evaluate` function remains completely unchanged.
+I've added `create_javascript_profile` and `create_typescript_profile`, populating them with the correct `tree-sitter` queries. Then, I registered them in the `LANGUAGE_PROFILES` map for the relevant file extensions (`js`, `jsx`, `ts`, `tsx`). The core evaluation logic remains unchanged.
 
 ```diff
  // START rdump/src/predicates/code_aware.rs
@@ -70,11 +76,16 @@ This is the key architectural validation. I've added a `create_python_profile` a
          let mut m = HashMap::new();
          // Phase 2.0: Only Rust is implemented.
          m.insert("rs", create_rust_profile());
--        // In the future, we will add:
--        // m.insert("py", create_python_profile());
--        // m.insert("js", create_javascript_profile());
-+        // Phase 2.1: Add Python support.
-+        m.insert("py", create_python_profile());
+         // Phase 2.1: Add Python support.
+         m.insert("py", create_python_profile());
++        // Phase 2.2: Add JS/TS support
++        let ts_profile = create_typescript_profile();
++        m.insert("ts", ts_profile);
++        m.insert("tsx", create_typescript_profile()); // Reuse TS profile for TSX
++
++        let js_profile = create_javascript_profile();
++        m.insert("js", js_profile);
++        m.insert("jsx", create_javascript_profile()); // Reuse JS profile for JSX
          m
      };
  }
@@ -119,40 +130,64 @@ This is the key architectural validation. I've added a `create_python_profile` a
      LanguageProfile { language, queries }
  }
 
-+/// Creates the profile for the Python language.
-+fn create_python_profile() -> LanguageProfile {
-+    let language = tree_sitter_python::language();
+ /// Creates the profile for the Python language.
+ fn create_python_profile() -> LanguageProfile {
+     let language = tree_sitter_python::language();
+     let mut queries = HashMap::new();
+
+     // Query for class definitions.
+     queries.insert(
+         PredicateKey::Def,
+         "
+         (class_definition name: (identifier) @match)
+         "
+         .to_string(),
+     );
+
+     // Query for function definitions.
+     queries.insert(
+         PredicateKey::Func,
+         "
+         (function_definition name: (identifier) @match)
+         "
+         .to_string(),
+     );
+
+     // Query for `import` and `from ... import` statements.
+     queries.insert(
+         PredicateKey::Import,
+         "
+         [
+             (import_statement) @match
+             (import_from_statement) @match
+         ]
+         "
+         .to_string(),
+     );
+
+     LanguageProfile { language, queries }
+ }
+
++/// Creates the profile for the JavaScript language.
++fn create_javascript_profile() -> LanguageProfile {
++    let language = tree_sitter_javascript::language();
 +    let mut queries = HashMap::new();
 +
-+    // Query for class definitions.
-+    queries.insert(
-+        PredicateKey::Def,
-+        "
-+        (class_definition name: (identifier) @match)
-+        "
-+        .to_string(),
-+    );
++    queries.insert(PredicateKey::Def, "(class_declaration name: (identifier) @match)".to_string());
++    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition property: (property_identifier) @match) ]".to_string());
++    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
 +
-+    // Query for function definitions.
-+    queries.insert(
-+        PredicateKey::Func,
-+        "
-+        (function_definition name: (identifier) @match)
-+        "
-+        .to_string(),
-+    );
++    LanguageProfile { language, queries }
++}
 +
-+    // Query for `import` and `from ... import` statements.
-+    queries.insert(
-+        PredicateKey::Import,
-+        "
-+        [
-+            (import_statement) @match
-+            (import_from_statement) @match
-+        ]
-+        "
-+        .to_string(),
-+    );
++/// Creates the profile for the TypeScript language.
++fn create_typescript_profile() -> LanguageProfile {
++    let language = tree_sitter_typescript::language_typescript();
++    let mut queries = HashMap::new();
++
++    queries.insert(PredicateKey::Def, "[ (class_declaration name: (type_identifier) @match) (interface_declaration name: (type_identifier) @match) (type_alias_declaration name: (type_identifier) @match) ]".to_string());
++    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
++    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
 +
 +    LanguageProfile { language, queries }
 +}
@@ -176,13 +211,10 @@ This is the key architectural validation. I've added a `create_python_profile` a
              _ => return Ok(false), // This predicate is not implemented for this language yet.
          };
 
--        // 3. Lazily get the parsed tree from the file context.
--        let tree = context.get_tree(profile.language)?;
--        let content = context.get_content()?;
-+        // 3. Get content and lazily get the parsed tree from the file context.
-+        // We get content first to avoid mutable/immutable borrow issues with context.
-+        let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
-+        let tree = context.get_tree(profile.language)?;
+         // 3. Get content and lazily get the parsed tree from the file context.
+         // We get content first to avoid mutable/immutable borrow issues with context.
+         let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
+         let tree = context.get_tree(profile.language)?;
 
          // 4. Compile the tree-sitter query.
          let query = Query::new(profile.language, ts_query_str)
@@ -222,7 +254,7 @@ This is the key architectural validation. I've added a `create_python_profile` a
 
 ### **`rdump/src/predicates/mod.rs` (Modified)**
 
-I've added a new unit test, `test_code_aware_evaluator_python_suite`, to verify the Python logic at the component level.
+I've added two new unit tests, one for JavaScript and one for TypeScript, to validate the new profiles at the component level.
 
 ```diff
  // START rdump/src/predicates/mod.rs
@@ -538,49 +570,109 @@ I've added a new unit test, `test_code_aware_evaluator_python_suite`, to verify 
          let mut ctx = FileContext::new(file_path.clone());
          assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "anyhow").unwrap());
      }
+
+     #[test]
+     fn test_code_aware_evaluator_python_suite() {
+         let python_code = r#"
+ import os
+ from sys import argv
+
+ class DataProcessor:
+     def __init__(self):
+         pass
+
+ def process_data():
+     print("Processing")
+         "#;
+
+         let temp_dir = tempfile::tempdir().unwrap();
+         let file_path = temp_dir.path().join("script.py");
+         let mut file = std::fs::File::create(&file_path).unwrap();
+         file.write_all(python_code.as_bytes()).unwrap();
+
+         let evaluator = CodeAwareEvaluator;
+
+         // --- Test Definitions (Classes) ---
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "DataProcessor").unwrap());
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Def, "process_data").unwrap());
+
+         // --- Test Functions ---
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap());
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Func, "DataProcessor").unwrap());
+
+         // --- Test Imports ---
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "os").unwrap());
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "sys").unwrap());
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "argv").unwrap());
+         let mut ctx = FileContext::new(file_path.clone());
+         assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "numpy").unwrap());
+     }
 +
 +    #[test]
-+    fn test_code_aware_evaluator_python_suite() {
-+        let python_code = r#"
-+import os
-+from sys import argv
++    fn test_code_aware_evaluator_javascript_suite() {
++        let js_code = r#"
++            import { open } from 'fs/promises';
 +
-+class DataProcessor:
-+    def __init__(self):
-+        pass
++            class Logger {
++                log(message) { console.log(message); }
++            }
 +
-+def process_data():
-+    print("Processing")
++            function a() { }
 +        "#;
 +
 +        let temp_dir = tempfile::tempdir().unwrap();
-+        let file_path = temp_dir.path().join("script.py");
++        let file_path = temp_dir.path().join("script.js");
++        file_path.parent().unwrap().to_path_buf().push("script.js");
 +        let mut file = std::fs::File::create(&file_path).unwrap();
-+        file.write_all(python_code.as_bytes()).unwrap();
++        file.write_all(js_code.as_bytes()).unwrap();
 +
 +        let evaluator = CodeAwareEvaluator;
 +
-+        // --- Test Definitions (Classes) ---
 +        let mut ctx = FileContext::new(file_path.clone());
-+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "DataProcessor").unwrap());
-+        let mut ctx = File-Context::new(file_path.clone());
-+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Def, "process_data").unwrap());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Logger").unwrap());
++        let mut ctx = FileContext::new(file_path.clone());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "log").unwrap());
++        let mut ctx = FileContext::new(file_path.clone());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fs/promises").unwrap());
++    }
 +
-+        // --- Test Functions ---
-+        let mut ctx = FileContext::new(file_path.clone());
-+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap());
-+        let mut ctx = FileContext::new(file_path.clone());
-+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Func, "DataProcessor").unwrap());
++    #[test]
++    fn test_code_aware_evaluator_typescript_suite() {
++        let ts_code = r#"
++            import React from 'react';
 +
-+        // --- Test Imports ---
++            interface User { id: number; }
++            type ID = string | number;
++
++            class ApiClient {
++                fetchUser(): User | null { return null; }
++            }
++        "#;
++
++        let temp_dir = tempfile::tempdir().unwrap();
++        let file_path = temp_dir.path().join("api.ts");
++        let mut file = std::fs::File::create(&file_path).unwrap();
++        file.write_all(ts_code.as_bytes()).unwrap();
++
++        let evaluator = CodeAwareEvaluator;
++
 +        let mut ctx = FileContext::new(file_path.clone());
-+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "os").unwrap());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "User").unwrap(), "Should find interface");
 +        let mut ctx = FileContext::new(file_path.clone());
-+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "sys").unwrap());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ID").unwrap(), "Should find type alias");
 +        let mut ctx = FileContext::new(file_path.clone());
-+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "argv").unwrap());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ApiClient").unwrap(), "Should find class");
 +        let mut ctx = FileContext::new(file_path.clone());
-+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "numpy").unwrap());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "fetchUser").unwrap());
++        let mut ctx = FileContext::new(file_path.clone());
++        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "React").unwrap());
 +    }
  }
 
@@ -589,7 +681,7 @@ I've added a new unit test, `test_code_aware_evaluator_python_suite`, to verify 
 
 ### **`tests/code_aware_search.rs` (Modified)**
 
-I've enhanced the integration test suite to create Python files and added new tests to verify Python-specific queries end-to-end.
+Finally, I've updated the integration tests to include `.js` and `.ts` files and added new tests to verify the end-to-end functionality for these languages.
 
 ```diff
  // START tests/code_aware_search.rs
@@ -601,7 +693,8 @@ I've enhanced the integration test suite to create Python files and added new te
  use std::process::Command;
  use tempfile::tempdir;
 
- /// A helper to set up a temporary directory with a sample Rust and Python project.
+-/// A helper to set up a temporary directory with a sample Rust and Python project.
++/// A helper to set up a temporary directory with a multi-language sample project.
  fn setup_test_project() -> tempfile::TempDir {
      let dir = tempdir().unwrap();
      let src_dir = dir.path().join("src");
@@ -649,20 +742,52 @@ I've enhanced the integration test suite to create Python files and added new te
      let mut readme_md = fs::File::create(dir.path().join("README.md")).unwrap();
      readme_md.write_all(readme_md_content.as_bytes()).unwrap();
 
-+    // --- NEW: Add a Python file ---
-+    let py_content = r#"
-+import os
+-    // --- NEW: Add a Python file ---
++    // --- Add a Python file ---
+     let py_content = r#"
+ import os
+
+ class Helper:
+     def __init__(self):
+         self.path = os.getcwd()
+
+ def run_helper():
+     h = Helper()
+     return h.path
+ "#;
+     let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
+     py_file.write_all(py_content.as_bytes()).unwrap();
+
++    // --- NEW: Add JS and TS files ---
++    let js_content = r#"
++import { a } from './lib';
 +
-+class Helper:
-+    def __init__(self):
-+        self.path = os.getcwd()
-+
-+def run_helper():
-+    h = Helper()
-+    return h.path
++export class OldLogger {
++    log(msg) { console.log(msg); }
++}
 +"#;
-+    let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
-+    py_file.write_all(py_content.as_bytes()).unwrap();
++    fs::File::create(src_dir.join("logger.js"))
++        .unwrap()
++        .write_all(js_content.as_bytes())
++        .unwrap();
++
++    let ts_content = r#"
++import * as path from 'path';
++
++export interface ILog {
++    message: string;
++}
++
++export type LogLevel = "info" | "warn" | "error";
++
++export function createLog(message: string): ILog {
++    return { message };
++}
++"#;
++    fs::File::create(src_dir.join("log_utils.ts"))
++        .unwrap()
++        .write_all(ts_content.as_bytes())
++        .unwrap();
 +
      dir
  }
@@ -801,51 +926,102 @@ I've enhanced the integration test suite to create Python files and added new te
          .stdout(predicate::str::contains("src/main.rs"))
          .stdout(predicate::str::contains("src/lib.rs"));
  }
-+
+
+ #[test]
+ fn test_def_finds_python_class() {
+     let dir = setup_test_project();
+
+     let mut cmd = Command::cargo_bin("rdump").unwrap();
+     cmd.current_dir(dir.path());
+     cmd.arg("def:Helper & ext:py");
+
+     cmd.assert()
+         .success()
+         .stdout(predicate::str::contains("helper.py"))
+         .stdout(predicate::str::contains("class Helper:"))
+         .stdout(predicate::str::contains("src/main.rs").not());
+ }
+
+ #[test]
+ fn test_func_finds_python_function() {
+     let dir = setup_test_project();
+
+     let mut cmd = Command::cargo_bin("rdump").unwrap();
+     cmd.current_dir(dir.path());
+     cmd.arg("func:run_helper");
+
+     cmd.assert()
+         .success()
+         .stdout(predicate::str::contains("helper.py"))
+         .stdout(predicate::str::contains("def run_helper():"))
+         .stdout(predicate::str::contains("src/main.rs").not());
+ }
+
+ #[test]
+ fn test_import_finds_python_import() {
+     let dir = setup_test_project();
+
+     let mut cmd = Command::cargo_bin("rdump").unwrap();
+     cmd.current_dir(dir.path());
+     cmd.arg("import:os & ext:py");
+
+     cmd.assert()
+         .success()
+         .stdout(predicate::str::contains("helper.py"))
+         .stdout(predicate::str::contains("import os"))
+         .stdout(predicate::str::contains("src/lib.rs").not());
+ }
+
 +#[test]
-+fn test_def_finds_python_class() {
++fn test_def_finds_javascript_class() {
 +    let dir = setup_test_project();
 +
 +    let mut cmd = Command::cargo_bin("rdump").unwrap();
 +    cmd.current_dir(dir.path());
-+    cmd.arg("def:Helper & ext:py");
++    cmd.arg("def:OldLogger");
 +
 +    cmd.assert()
 +        .success()
-+        .stdout(predicate::str::contains("helper.py"))
-+        .stdout(predicate::str::contains("class Helper:"))
-+        .stdout(predicate::str::contains("src/main.rs").not());
++        .stdout(predicate::str::contains("logger.js"))
++        .stdout(predicate::str::contains("class OldLogger"))
++        .stdout(predicate::str::contains("log_utils.ts").not());
 +}
 +
 +#[test]
-+fn test_func_finds_python_function() {
++fn test_def_finds_typescript_interface_and_type() {
 +    let dir = setup_test_project();
-+
 +    let mut cmd = Command::cargo_bin("rdump").unwrap();
-+    cmd.current_dir(dir.path());
-+    cmd.arg("func:run_helper");
++    cmd.current_dir(dir.path()).arg("def:ILog | def:LogLevel");
 +
 +    cmd.assert()
 +        .success()
-+        .stdout(predicate::str::contains("helper.py"))
-+        .stdout(predicate::str::contains("def run_helper():"))
-+        .stdout(predicate::str::contains("src/main.rs").not());
++        .stdout(predicate::str::contains("log_utils.ts"))
++        .stdout(predicate::str::contains("interface ILog"))
++        .stdout(predicate::str::contains(r#"type LogLevel = "info" | "warn" | "error";"#));
 +}
 +
 +#[test]
-+fn test_import_finds_python_import() {
++fn test_func_finds_typescript_function() {
 +    let dir = setup_test_project();
-+
 +    let mut cmd = Command::cargo_bin("rdump").unwrap();
-+    cmd.current_dir(dir.path());
-+    cmd.arg("import:os & ext:py");
++    cmd.current_dir(dir.path()).arg("func:createLog");
 +
 +    cmd.assert()
 +        .success()
-+        .stdout(predicate::str::contains("helper.py"))
-+        .stdout(predicate::str::contains("import os"))
-+        .stdout(predicate::str::contains("src/lib.rs").not());
++        .stdout(predicate::str::contains("log_utils.ts"))
++        .stdout(predicate::str::contains("export function createLog"));
 +}
 +
++#[test]
++fn test_import_finds_typescript_import() {
++    let dir = setup_test_project();
++    let mut cmd = Command::cargo_bin("rdump").unwrap();
++    cmd.current_dir(dir.path()).arg("import:path & ext:ts");
++
++    cmd.assert()
++        .success()
++        .stdout(predicate::str::contains("log_utils.ts"))
++        .stdout(predicate::str::contains("import * as path from 'path';"));
++}
  // END tests/code_aware_search.rs
 ```
