@@ -1,13 +1,13 @@
 use crate::parser::PredicateKey;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
+mod go;
+mod java;
 mod javascript;
 mod python;
 mod rust;
 mod typescript;
-mod go;
-mod java;
 
 /// Defines the tree-sitter queries and metadata for a specific language.
 pub struct LanguageProfile {
@@ -17,8 +17,8 @@ pub struct LanguageProfile {
     pub queries: HashMap<PredicateKey, String>,
 }
 
-lazy_static! {
-    pub(super) static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
+pub(super) static LANGUAGE_PROFILES: Lazy<HashMap<&'static str, LanguageProfile>> =
+    Lazy::new(|| {
         let mut m = HashMap::new();
         m.insert("rs", rust::create_rust_profile());
         m.insert("py", python::create_python_profile());
@@ -27,8 +27,7 @@ lazy_static! {
         m.insert("ts", typescript::create_typescript_profile());
         m.insert("js", javascript::create_javascript_profile());
         m
-    };
-}
+    });
 
 /// Returns a list of all configured language profiles.
 pub fn list_language_profiles() -> Vec<&'static LanguageProfile> {

@@ -46,36 +46,36 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
 
-   // --- Determine if color should be used ---
-   let use_color = match args.color {
-       ColorChoice::Always => true,
-       ColorChoice::Never => false,
-       ColorChoice::Auto => atty::is(Stream::Stdout),
-   };
+    // --- Determine if color should be used ---
+    let use_color = match args.color {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => atty::is(Stream::Stdout),
+    };
 
     // --- 3. Evaluate files ---
     let evaluator = Evaluator::new(ast);
-   let mut matching_files: Vec<(PathBuf, Vec<Range>)> = candidate_files
+    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = candidate_files
         .par_iter()
         .filter_map(|path| {
             let mut context = FileContext::new(path.clone());
             match evaluator.evaluate(&mut context) {
-               Ok(MatchResult::Boolean(true)) => {
-                   // For boolean matches, we don't have specific hunks, so we pass an empty Vec.
-                   // The formatter will treat this as "the whole file".
-                   Some((path.clone(), Vec::new()))
-               }
-               Ok(MatchResult::Boolean(false)) => None,
-               Ok(MatchResult::Hunks(hunks)) => {
-                   if hunks.is_empty() {
-                       None
-                   } else {
-                       Some((path.clone(), hunks))
-                   }
-               }
+                Ok(MatchResult::Boolean(true)) => {
+                    // For boolean matches, we don't have specific hunks, so we pass an empty Vec.
+                    // The formatter will treat this as "the whole file".
+                    Some((path.clone(), Vec::new()))
+                }
+                Ok(MatchResult::Boolean(false)) => None,
+                Ok(MatchResult::Hunks(hunks)) => {
+                    if hunks.is_empty() {
+                        None
+                    } else {
+                        Some((path.clone(), hunks))
+                    }
+                }
                 Err(e) => {
                     eprintln!("Error evaluating file {}: {}", path.display(), e);
-                   None
+                    None
                 }
             }
         })
@@ -95,7 +95,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &matching_files,
         &args.format,
         args.line_numbers,
-       use_color,
+        use_color,
     )?;
 
     Ok(())
@@ -114,9 +114,9 @@ fn get_candidate_files(
     walker_builder.hidden(!hidden).max_depth(max_depth);
 
     if !no_ignore {
-       // Layer 1: Our "sane defaults". These have the lowest precedence.
-       // A user can override these with `!` in their own ignore files.
-       let default_ignores = "
+        // Layer 1: Our "sane defaults". These have the lowest precedence.
+        // A user can override these with `!` in their own ignore files.
+        let default_ignores = "
            # Default rdump ignores
            node_modules/
            target/
@@ -128,24 +128,24 @@ fn get_candidate_files(
            *.pyc
            __pycache__/
        ";
-       let mut temp_ignore = NamedTempFile::new()?;
-       write!(temp_ignore, "{}", default_ignores)?;
-       walker_builder.add_ignore(temp_ignore.path());
+        let mut temp_ignore = NamedTempFile::new()?;
+        write!(temp_ignore, "{}", default_ignores)?;
+        walker_builder.add_ignore(temp_ignore.path());
 
-       // Layer 2: A user's custom global ignore file.
-       if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
-           if global_ignore_path.exists() {
-               if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
-                   eprintln!("Warning: could not add global ignore file: {}", err);
-               }
-           }
-       }
+        // Layer 2: A user's custom global ignore file.
+        if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
+            if global_ignore_path.exists() {
+                if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
+                    eprintln!("Warning: could not add global ignore file: {}", err);
+                }
+            }
+        }
 
-       // Layer 3: A user's custom project-local .rdumpignore file.
-       // This has high precedence.
+        // Layer 3: A user's custom project-local .rdumpignore file.
+        // This has high precedence.
         walker_builder.add_custom_ignore_filename(".rdumpignore");
 
-       // Layer 4: Standard .gitignore files, which have the highest project-specific precedence.
+        // Layer 4: Standard .gitignore files, which have the highest project-specific precedence.
         walker_builder.git_global(true);
         walker_builder.git_ignore(true);
     } else {
@@ -166,15 +166,12 @@ fn get_candidate_files(
 
 #[cfg(test)]
 mod tests {
-// ... (existing tests are unchanged)
-// ...
+    // ... (existing tests are unchanged)
+    // ...
     use super::*;
-    
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
-
-    
 
     // Helper to run get_candidate_files and return a sorted list of file names
     fn get_sorted_file_names(
@@ -196,44 +193,48 @@ mod tests {
             .collect()
     }
 
-// ... (existing test functions)
+    // ... (existing test functions)
 
     // ... (existing tests are unchanged)
-// ...
-// ... existing tests ...
+    // ...
+    // ... existing tests ...
     #[test]
     fn test_custom_rdumpignore_file() {
-       let dir = tempdir().unwrap();
-       let root = dir.path();
-       let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
-       writeln!(ignore_file, "*.log").unwrap();
-       fs::File::create(root.join("app.js")).unwrap();
-       fs::File::create(root.join("app.log")).unwrap();
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "*.log").unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
+        fs::File::create(root.join("app.log")).unwrap();
 
         let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
         assert_eq!(files, vec!["app.js"]);
     }
 
-   #[test]
-   fn test_unignore_via_rdumpignore() {
-       // This test verifies that a user can override our "sane defaults".
-       let dir = tempdir().unwrap();
-       let root = dir.path();
+    #[test]
+    fn test_unignore_via_rdumpignore() {
+        // This test verifies that a user can override our "sane defaults".
+        let dir = tempdir().unwrap();
+        let root = dir.path();
 
-       // Create a node_modules dir, which is ignored by default.
-       let node_modules = root.join("node_modules");
-       fs::create_dir(&node_modules).unwrap();
-       fs::File::create(node_modules.join("some_dep.js")).unwrap();
-       fs::File::create(root.join("app.js")).unwrap();
+        // Create a node_modules dir, which is ignored by default.
+        let node_modules = root.join("node_modules");
+        fs::create_dir(&node_modules).unwrap();
+        fs::File::create(node_modules.join("some_dep.js")).unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
 
-       // Create an ignore file that explicitly re-includes node_modules.
-       let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
-       writeln!(ignore_file, "!node_modules/").unwrap();
+        // Create an ignore file that explicitly re-includes node_modules.
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "!node_modules/").unwrap();
 
-       // Run the search. Both files should now be found.
-       let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
-       assert_eq!(files.len(), 2);
-       assert!(files.contains(&"app.js".to_string()));
-       assert!(files.contains(&"node_modules/some_dep.js".to_string().replace('/', &std::path::MAIN_SEPARATOR.to_string())));
-   }
+        // Run the search. Both files should now be found.
+        let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"app.js".to_string()));
+        assert!(files.contains(
+            &"node_modules/some_dep.js"
+                .to_string()
+                .replace('/', &std::path::MAIN_SEPARATOR.to_string())
+        ));
+    }
 }

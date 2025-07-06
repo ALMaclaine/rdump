@@ -88,14 +88,12 @@ pub fn save_config(config: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lazy_static::lazy_static;
+    use once_cell::sync::Lazy;
     use std::io::Write;
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    lazy_static! {
-        static ref ENV_MUTEX: Mutex<()> = Mutex::new(());
-    }
+    static ENV_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn test_find_local_config_in_parent() {
@@ -161,7 +159,10 @@ mod tests {
         assert_eq!(config.presets.len(), 3);
         assert_eq!(config.presets.get("rust").unwrap(), "ext:rs");
         assert_eq!(config.presets.get("scripts").unwrap(), "ext:sh");
-        assert_eq!(config.presets.get("docs").unwrap(), "ext:md | ext:txt");
+        assert_eq!(
+            config.presets.get("docs").unwrap(),
+            "ext:md | ext:txt"
+        );
 
         env::remove_var("RDUMP_TEST_CONFIG_DIR");
     }

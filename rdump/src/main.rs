@@ -9,19 +9,9 @@ mod predicates;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
-use lazy_static::lazy_static;
-use crate::predicates::code_aware::profiles::list_language_profiles;
 
 // Bring our command functions into scope
-use commands::{preset::run_preset, search::run_search, lang::run_lang};
-
-lazy_static! {
-    // Generate the help text for supported languages at runtime.
-    static ref SUPPORTED_LANGUAGES_HELP: String = {
-        let names: Vec<&str> = list_language_profiles().iter().map(|p| p.name).collect();
-        format!("(e.g., {})", names.join(", "))
-    };
-}
+use commands::{lang::run_lang, preset::run_preset, search::run_search};
 
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
@@ -56,7 +46,7 @@ pub enum ColorChoice {
     Never,
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Debug)]
 pub struct SearchArgs {
     /// The query string to search for, using rdump Query Language (RQL).
     ///
@@ -74,7 +64,7 @@ pub struct SearchArgs {
     ///   contains:<str>     - Literal string a file contains
     ///   matches:<regex>    - Regular expression a file's content matches
     ///
-   #[doc = "CODE-AWARE PREDICATES for supported languages:"]
+    #[doc = "CODE-AWARE PREDICATES for supported languages:"]
     ///   def:<str>          - A generic definition (class, struct, enum, etc.)
     ///   func:<str>         - A function or method
     ///   import:<str>       - An import or use statement
@@ -109,8 +99,8 @@ pub struct SearchArgs {
     pub no_ignore: bool,
     #[arg(long)]
     pub hidden: bool,
-   #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help = "When to use syntax highlighting")]
-   pub color: ColorChoice,
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help = "When to use syntax highlighting")]
+    pub color: ColorChoice,
     #[arg(long)]
     pub max_depth: Option<usize>,
 
@@ -176,10 +166,10 @@ pub enum Format {
 /// The main entry point.
 /// Its only job is to parse the CLI and delegate to the correct command module.
 fn main() -> Result<()> {
-    let mut cli = Cli::parse();
+    let cli = Cli::parse();
 
-    match &mut cli.command {
-        Commands::Search(args) => {
+    match cli.command {
+        Commands::Search(mut args) => {
             // --- Handle Shorthand Flags ---
             if args.no_headers {
                 args.format = Format::Cat;
@@ -187,13 +177,13 @@ fn main() -> Result<()> {
             if args.find {
                 args.format = Format::Find;
             }
-            run_search(args.clone())
+            run_search(args)
         }
         Commands::Lang(args) => {
             // Default to `list` if no subcommand is given for `lang`
-            let action = args.action.clone().unwrap_or(LangAction::List);
+            let action = args.action.unwrap_or(LangAction::List);
             run_lang(action)
         }
-        Commands::Preset(args) => run_preset(args.action.clone()),
+        Commands::Preset(args) => run_preset(args.action),
     }
 }

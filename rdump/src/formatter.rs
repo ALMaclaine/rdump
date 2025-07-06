@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local}; // For formatting timestamps
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -16,11 +16,9 @@ use tree_sitter::Range;
 // We need to pass the format enum from main.rs
 use crate::Format;
 
-lazy_static! {
-    // Lazily load syntax and theme sets once.
-    static ref SYNTAX_SET: SyntaxSet = SyntaxSet::load_defaults_newlines();
-    static ref THEME_SET: ThemeSet = ThemeSet::load_defaults();
-}
+// Lazily load syntax and theme sets once.
+static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct FileOutput {
@@ -76,26 +74,28 @@ pub fn print_output(
         Format::Json => {
             let mut outputs = Vec::new();
             for (path, _) in matching_files {
-               let content = fs::read_to_string(path)
-                   .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
+                let content = fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read file for final output: {}", path.display())
+                })?;
                 outputs.push(FileOutput {
-                   path: path.to_string_lossy().to_string(),
+                    path: path.to_string_lossy().to_string(),
                     content,
                 });
             }
             // Use to_writer_pretty for readable JSON output
-           serde_json::to_writer_pretty(writer, &outputs)?;
+            serde_json::to_writer_pretty(writer, &outputs)?;
         }
         Format::Cat => {
             for (path, _) in matching_files {
-                 let content = fs::read_to_string(path)?;
-                if use_color { // To terminal
-                     print_highlighted_content(
-                         writer,
-                         &content,
-                         &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
-                         with_line_numbers,
-                     )?;
+                let content = fs::read_to_string(path)?;
+                if use_color {
+                    // To terminal
+                    print_highlighted_content(
+                        writer,
+                        &content,
+                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                        with_line_numbers,
+                    )?;
                 } else {
                     print_plain_content(writer, &content, with_line_numbers)?; // To file/pipe
                 }
@@ -120,38 +120,54 @@ pub fn print_output(
                 }
             }
         }
-       Format::Hunks => {
-           for (i, (path, hunks)) in matching_files.iter().enumerate() {
-               if i > 0 {
-                   writeln!(writer, "\n---\n")?;
-               }
-               writeln!(writer, "File: {}", path.display())?;
-               writeln!(writer, "---")?;
-               let content = fs::read_to_string(path)?;
-               let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        Format::Hunks => {
+            for (i, (path, hunks)) in matching_files.iter().enumerate() {
+                if i > 0 {
+                    writeln!(writer, "\n---\n")?;
+                }
+                writeln!(writer, "File: {}", path.display())?;
+                writeln!(writer, "---")?;
+                let content = fs::read_to_string(path)?;
+                let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-               if hunks.is_empty() {
-                   // This was a boolean match, print the whole file
-                   if use_color {
-                       print_highlighted_content(writer, &content, extension, with_line_numbers)?;
-                   } else {
-                       print_markdown_fenced_content(writer, &content, extension, with_line_numbers)?;
-                   }
-               } else {
-                   // This was a hunk match, print only the matched ranges
-                   let content_bytes = content.as_bytes();
-                   for hunk_range in hunks {
-                       let hunk_content = &content_bytes[hunk_range.start_byte..hunk_range.end_byte];
-                       let hunk_str = std::str::from_utf8(hunk_content)?;
-                       if use_color {
-                           print_highlighted_content(writer, hunk_str, extension, with_line_numbers)?;
-                       } else {
-                           print_markdown_fenced_content(writer, hunk_str, extension, with_line_numbers)?;
-                       }
-                   }
-               }
-           }
-       }
+                if hunks.is_empty() {
+                    // This was a boolean match, print the whole file
+                    if use_color {
+                        print_highlighted_content(writer, &content, extension, with_line_numbers)?;
+                    } else {
+                        print_markdown_fenced_content(
+                            writer,
+                            &content,
+                            extension,
+                            with_line_numbers,
+                        )?;
+                    }
+                } else {
+                    // This was a hunk match, print only the matched ranges
+                    let content_bytes = content.as_bytes();
+                    for hunk_range in hunks {
+                        let hunk_content =
+                            &content_bytes[hunk_range.start_byte..hunk_range.end_byte];
+                        let hunk_str = std::str::from_utf8(hunk_content)?;
+                        if use_color {
+                            print_highlighted_content(
+                                writer,
+                                hunk_str,
+                                extension,
+                                with_line_numbers,
+                            )?;
+                        } else {
+                            print_markdown_fenced_content(
+                                writer,
+                                hunk_str,
+                                extension,
+                                with_line_numbers,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -285,7 +301,10 @@ mod tests {
     fn test_format_paths() {
         let file1 = create_temp_file_with_content("a");
         let file2 = create_temp_file_with_content("b");
-        let paths = vec![(file1.path().to_path_buf(), vec![]), (file2.path().to_path_buf(), vec![])];
+        let paths = vec![
+            (file1.path().to_path_buf(), vec![]),
+            (file2.path().to_path_buf(), vec![]),
+        ];
         let mut writer = Vec::new();
         print_output(&mut writer, &paths, &Format::Paths, false, false).unwrap();
         let output = String::from_utf8(writer).unwrap();
@@ -323,7 +342,10 @@ mod tests {
         let output = String::from_utf8(writer).unwrap();
 
         // Check for evidence of ANSI color, not the exact codes which can be brittle.
-        assert!(output.contains("\x1b["), "Should contain ANSI escape codes");
+        assert!(
+            output.contains("\x1b["),
+            "Should contain ANSI escape codes"
+        );
         assert!(!output.contains("```"), "Should not contain markdown fences");
     }
 }

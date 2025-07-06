@@ -38,12 +38,65 @@ tempfile = "3.10.1"
 
 // END rdump/Cargo.toml
 
+// START rdump/src/commands/lang.rs
+
+use crate::predicates::code_aware::profiles::list_language_profiles;
+use crate::LangAction;
+use anyhow::{anyhow, Result};
+
+pub fn run_lang(action: LangAction) -> Result<()> {
+    match action {
+        LangAction::List => {
+            let profiles = list_language_profiles();
+            println!("{:<12} {}", "NAME", "EXTENSIONS");
+            println!("──────────────────────────");
+            for profile in profiles {
+                println!(
+                    "{:<12} {}",
+                    profile.name,
+                    profile.extensions.join(", ")
+                );
+            }
+        }
+        LangAction::Describe { language } => {
+            let lang_lower = language.to_lowercase();
+            let profiles = list_language_profiles();
+            let profile = profiles
+                .into_iter()
+                .find(|p| p.name.to_lowercase() == lang_lower || p.extensions.contains(&lang_lower.as_str()))
+                .ok_or_else(|| anyhow!("Language '{}' not supported. Run `rdump lang list` to see available languages.", language))?;
+
+            println!("Predicates for {} ({})", profile.name, profile.extensions.join(", "));
+
+            let metadata_preds = vec!["ext", "name", "path", "size", "modified"];
+            let content_preds = vec!["contains", "matches"];
+
+            println!("\nMETADATA");
+            println!("  {}", metadata_preds.join(", "));
+
+            println!("\nCONTENT");
+            println!("  {}", content_preds.join(", "));
+
+            let semantic_preds: Vec<&str> = profile.queries.keys().map(|k| k.as_ref()).collect();
+            if !semantic_preds.is_empty() {
+                println!("\nSEMANTIC");
+                println!("  {}", semantic_preds.join(", "));
+            }
+        }
+    }
+    Ok(())
+}
+
+
+// END rdump/src/commands/lang.rs
+
 // START rdump/src/commands/mod.rs
 
 // This makes the functions inside search.rs and preset.rs available
 // to other parts of the program that use the `commands` module.
 pub mod preset;
 pub mod search;
+pub mod lang;
 
 
 // END rdump/src/commands/mod.rs
@@ -284,38 +337,12 @@ mod tests {
 // ... (existing tests are unchanged)
 // ...
     use super::*;
-    use std::collections::HashSet;
+    
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
 
-    fn create_test_fs() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-
-        // Create files and directories
-        fs::File::create(root.join("file_a.txt")).unwrap();
-        fs::File::create(root.join(".hidden_file")).unwrap();
-
-        fs::create_dir(root.join("sub")).unwrap();
-        fs::File::create(root.join("sub/file_b.txt")).unwrap();
-
-        fs::create_dir_all(root.join("sub/sub2")).unwrap();
-        fs::File::create(root.join("sub/sub2/file_c.log")).unwrap();
-
-        fs::create_dir_all(root.join("target/debug")).unwrap();
-        fs::File::create(root.join("target/debug/app.exe")).unwrap();
-
-        fs::create_dir(root.join("logs")).unwrap();
-        fs::File::create(root.join("logs/yesterday.log")).unwrap();
-
-        let mut gitignore = fs::File::create(root.join(".gitignore")).unwrap();
-        writeln!(gitignore, "*.log").unwrap();
-        writeln!(gitignore, "logs/").unwrap();
-        writeln!(gitignore, "target/").unwrap();
-
-        (dir, root)
-    }
+    
 
     // Helper to run get_candidate_files and return a sorted list of file names
     fn get_sorted_file_names(
@@ -1133,9 +1160,19 @@ mod predicates;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use lazy_static::lazy_static;
+use crate::predicates::code_aware::profiles::list_language_profiles;
 
 // Bring our command functions into scope
-use commands::{preset::run_preset, search::run_search};
+use commands::{preset::run_preset, search::run_search, lang::run_lang};
+
+lazy_static! {
+    // Generate the help text for supported languages at runtime.
+    static ref SUPPORTED_LANGUAGES_HELP: String = {
+        let names: Vec<&str> = list_language_profiles().iter().map(|p| p.name).collect();
+        format!("(e.g., {})", names.join(", "))
+    };
+}
 
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
@@ -1154,6 +1191,9 @@ pub enum Commands {
     /// Search for files using a query (default command).
     #[command(visible_alias = "s")]
     Search(SearchArgs),
+    /// List supported languages and their available predicates.
+    #[command(visible_alias = "l")]
+    Lang(LangArgs),
     /// Manage saved presets.
     #[command(visible_alias = "p")]
     Preset(PresetArgs),
@@ -1185,23 +1225,23 @@ pub struct SearchArgs {
     ///   contains:<str>     - Literal string a file contains
     ///   matches:<regex>    - Regular expression a file's content matches
     ///
-   /// CODE-AWARE PREDICATES (for Rust, Python, JS, TS):
-   ///   def:<str>          - A generic definition (class, struct, enum, etc.)
-   ///   func:<str>         - A function or method
-   ///   import:<str>       - An import or use statement
-   ///   call:<str>         - A function or method call site
-   ///
-   /// GRANULAR DEFINITIONS:
-   ///   class:<str>        - A class definition
-   ///   struct:<str>       - A struct definition
-   ///   enum:<str>         - An enum definition
-   ///   interface:<str>    - An interface definition
-   ///   trait:<str>        - A trait definition
-   ///   type:<str>         - A type alias
-   ///
-   /// SYNTACTIC CONTENT:
-   ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
-   ///   str:<str>          - Text inside a string literal
+   #[doc = "CODE-AWARE PREDICATES for supported languages:"]
+    ///   def:<str>          - A generic definition (class, struct, enum, etc.)
+    ///   func:<str>         - A function or method
+    ///   import:<str>       - An import or use statement
+    ///   call:<str>         - A function or method call site
+    ///
+    /// GRANULAR DEFINITIONS:
+    ///   class:<str>        - A class definition
+    ///   struct:<str>       - A struct definition
+    ///   enum:<str>         - An enum definition
+    ///   interface:<str>    - An interface definition
+    ///   trait:<str>        - A trait definition
+    ///   type:<str>         - A type alias
+    ///
+    /// SYNTACTIC CONTENT:
+    ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
+    ///   str:<str>          - Text inside a string literal
     #[arg(verbatim_doc_comment)]
     pub query: Option<String>,
     #[arg(long, short)]
@@ -1231,6 +1271,20 @@ pub struct SearchArgs {
 }
 
 #[derive(Parser, Debug)]
+pub struct LangArgs {
+    #[command(subcommand)]
+    pub action: Option<LangAction>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum LangAction {
+    /// List all supported languages.
+    List,
+    /// Describe the predicates available for a specific language.
+    Describe { language: String },
+}
+
+#[derive(Parser, Debug)]
 pub struct PresetArgs {
     #[command(subcommand)]
     pub action: PresetAction,
@@ -1256,12 +1310,18 @@ pub enum PresetAction {
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Format {
+    /// Human-readable markdown with file headers
     Markdown,
+    /// Machine-readable JSON
     Json,
+    /// A simple list of matching file paths
     Paths,
+    /// Raw concatenated file content, for piping
     Cat,
+    /// `ls`-like output with file metadata
     Find,
-   Hunks,
+    /// Show only the specific code blocks ("hunks") that match a semantic query
+    Hunks,
 }
 
 /// The main entry point.
@@ -1279,6 +1339,11 @@ fn main() -> Result<()> {
                 args.format = Format::Find;
             }
             run_search(args.clone())
+        }
+        Commands::Lang(args) => {
+            // Default to `list` if no subcommand is given for `lang`
+            let action = args.action.clone().unwrap_or(LangAction::List);
+            run_lang(action)
         }
         Commands::Preset(args) => run_preset(args.action.clone()),
     }
@@ -1325,6 +1390,33 @@ pub enum PredicateKey {
    Call,
     // A key for testing or unknown predicates
     Other(String),
+}
+
+impl AsRef<str> for PredicateKey {
+   fn as_ref(&self) -> &str {
+       match self {
+           PredicateKey::Ext => "ext",
+           PredicateKey::Name => "name",
+           PredicateKey::Path => "path",
+           PredicateKey::Contains => "contains",
+           PredicateKey::Matches => "matches",
+           PredicateKey::Size => "size",
+           PredicateKey::Modified => "modified",
+           PredicateKey::Def => "def",
+           PredicateKey::Func => "func",
+           PredicateKey::Import => "import",
+           PredicateKey::Class => "class",
+           PredicateKey::Struct => "struct",
+           PredicateKey::Enum => "enum",
+           PredicateKey::Interface => "interface",
+           PredicateKey::Trait => "trait",
+           PredicateKey::Type => "type",
+           PredicateKey::Comment => "comment",
+           PredicateKey::Str => "str",
+           PredicateKey::Call => "call",
+           PredicateKey::Other(s) => s.as_str(),
+       }
+   }
 }
 
 impl From<&str> for PredicateKey {
@@ -1593,7 +1685,7 @@ use crate::predicates::PredicateEvaluator;
 use anyhow::{Context, Result};
 use tree_sitter::{Query, QueryCursor};
 
-mod profiles;
+pub mod profiles;
 
 /// The evaluator that uses tree-sitter to perform code-aware queries.
 #[derive(Debug, Clone)]
@@ -1607,7 +1699,8 @@ impl PredicateEvaluator for CodeAwareEvaluator {
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        let profile = match profiles::LANGUAGE_PROFILES.get(extension) {
+        let binding = profiles::list_language_profiles();
+        let profile = match binding.iter().find(|p| p.extensions.contains(&extension)) {
             Some(p) => p,
             None => return Ok(MatchResult::Boolean(false)), // Not a supported language for this predicate.
         };
@@ -1693,7 +1786,12 @@ pub(super) fn create_go_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
     queries.insert(PredicateKey::Str, "[ (interpreted_string_literal) @match (raw_string_literal) @match ]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Go",
+        extensions: vec!["go"],
+        language,
+        queries,
+    }
 }
 
 
@@ -1729,7 +1827,12 @@ pub(super) fn create_java_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
     queries.insert(PredicateKey::Str, "(string_literal) @match".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Java",
+        extensions: vec!["java"],
+        language,
+        queries,
+    }
 }
 
 
@@ -1763,7 +1866,12 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
    queries.insert(PredicateKey::Comment, "[(comment) @match (regex) @match]".to_string()); // JS Regexes are basically comments
    queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "JavaScript",
+        extensions: vec!["js", "jsx"],
+        language,
+        queries,
+    }
 }
 
 
@@ -1782,10 +1890,12 @@ mod typescript;
 mod go;
 mod java;
 
-/// Defines the tree-sitter queries for a specific language.
-pub(super) struct LanguageProfile {
+/// Defines the tree-sitter queries and metadata for a specific language.
+pub struct LanguageProfile {
+    pub name: &'static str,
+    pub extensions: Vec<&'static str>,
     pub(super) language: tree_sitter::Language,
-    pub(super) queries: HashMap<PredicateKey, String>,
+    pub queries: HashMap<PredicateKey, String>,
 }
 
 lazy_static! {
@@ -1795,16 +1905,16 @@ lazy_static! {
         m.insert("py", python::create_python_profile());
         m.insert("go", go::create_go_profile());
         m.insert("java", java::create_java_profile());
-        let ts_profile = typescript::create_typescript_profile();
-        m.insert("ts", ts_profile);
-        m.insert("tsx", typescript::create_typescript_profile());
-        let js_profile = javascript::create_javascript_profile();
-        m.insert("js", js_profile);
-        m.insert("jsx", javascript::create_javascript_profile());
+        m.insert("ts", typescript::create_typescript_profile());
+        m.insert("js", javascript::create_javascript_profile());
         m
     };
 }
 
+/// Returns a list of all configured language profiles.
+pub fn list_language_profiles() -> Vec<&'static LanguageProfile> {
+    LANGUAGE_PROFILES.values().collect()
+}
 
 // END rdump/src/predicates/code_aware/profiles/mod.rs
 
@@ -1861,7 +1971,12 @@ pub(super) fn create_python_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
     queries.insert(PredicateKey::Str, "(string) @match".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Python",
+        extensions: vec!["py"],
+        language,
+        queries,
+    }
 }
 
 
@@ -1930,7 +2045,12 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
     queries.insert(PredicateKey::Str, "[(string_literal) @match (raw_string_literal) @match]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Rust",
+        extensions: vec!["rs"],
+        language,
+        queries,
+    }
 }
 
 
@@ -1970,7 +2090,12 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
    queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
    queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "TypeScript",
+        extensions: vec!["ts", "tsx"],
+        language,
+        queries,
+    }
 }
 
 
@@ -2300,8 +2425,7 @@ pub fn create_predicate_registry(
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::path::PathBuf;
-    use tempfile::NamedTempFile;
+    
 
    // The `code_aware` suite remains here as it tests the interaction
    // of multiple profiles, which is a responsibility of this parent module.

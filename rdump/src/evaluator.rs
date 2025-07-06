@@ -87,36 +87,44 @@ impl Evaluator {
     fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<MatchResult> {
         match node {
             AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
-           AstNode::LogicalOp(op, left, right) => {
-               let left_res = self.evaluate_node(left, context)?;
-               match op {
-                   crate::parser::LogicalOperator::And => {
-                       // Short-circuit if the left side is false or has no hunks
-                       if !left_res.is_match() {
-                           return Ok(MatchResult::Boolean(false));
-                       }
-                       let right_res = self.evaluate_node(right, context)?;
-                       if !right_res.is_match() {
-                           return Ok(MatchResult::Boolean(false));
-                       }
-                       // Both sides match, combine the results.
-                       return Ok(left_res.combine_with(right_res));
-                   }
-                   crate::parser::LogicalOperator::Or => {
-                       if left_res.is_match() {
-                           // If the left side matches, we might still need the right side's hunks.
-                           let right_res = self.evaluate_node(right, context)?;
-                           return Ok(left_res.combine_with(right_res));
-                       }
-                       // Left side didn't match, so the result is just the right side.
-                       return self.evaluate_node(right, context);
-                   }
-               }
-           }
-           AstNode::Not(node) => {
-               let result = self.evaluate_node(node, context)?;
-               Ok(MatchResult::Boolean(!result.is_match()))
-           }
+            AstNode::LogicalOp(op, left, right) => {
+                match op {
+                    crate::parser::LogicalOperator::And => {
+                        let left_res = self.evaluate_node(left, context)?;
+                        if !left_res.is_match() {
+                            return Ok(MatchResult::Boolean(false));
+                        }
+                        let right_res = self.evaluate_node(right, context)?;
+                        if !right_res.is_match() {
+                            return Ok(MatchResult::Boolean(false));
+                        }
+                        Ok(left_res.combine_with(right_res))
+                    }
+                    crate::parser::LogicalOperator::Or => {
+                        let left_res = self.evaluate_node(left, context)?;
+                        // Short-circuit if we have a non-hunkable, definitive match.
+                        // This prevents expensive evaluation of the right side.
+                        if let MatchResult::Boolean(true) = left_res {
+                            return Ok(left_res);
+                        }
+
+                        let right_res = self.evaluate_node(right, context)?;
+
+                        // Combine the results logically.
+                        if left_res.is_match() && right_res.is_match() {
+                            Ok(left_res.combine_with(right_res))
+                        } else if left_res.is_match() {
+                            Ok(left_res) // right side didn't match
+                        } else {
+                            Ok(right_res) // left side didn't match, so result is right
+                        }
+                    }
+                }
+            }
+            AstNode::Not(node) => {
+                let result = self.evaluate_node(node, context)?;
+                Ok(MatchResult::Boolean(!result.is_match()))
+            }
         }
     }
 
@@ -126,39 +134,39 @@ impl Evaluator {
         key: &PredicateKey,
         value: &str,
         context: &mut FileContext,
-   ) -> Result<MatchResult> {
+    ) -> Result<MatchResult> {
         if let Some(evaluator) = self.registry.get(key) {
             evaluator.evaluate(context, key, value)
         } else {
             // Handle unknown or unimplemented predicates gracefully.
-           Ok(MatchResult::Boolean(false))
+            Ok(MatchResult::Boolean(false))
         }
     }
 }
 
 impl MatchResult {
-   /// Returns true if the result is considered a match.
-   pub fn is_match(&self) -> bool {
-       match self {
-           MatchResult::Boolean(b) => *b,
-           MatchResult::Hunks(h) => !h.is_empty(),
-       }
-   }
+    /// Returns true if the result is considered a match.
+    pub fn is_match(&self) -> bool {
+        match self {
+            MatchResult::Boolean(b) => *b,
+            MatchResult::Hunks(h) => !h.is_empty(),
+        }
+    }
 
-   /// Combines two successful match results.
-   pub fn combine_with(self, other: MatchResult) -> Self {
-       match (self, other) {
-           (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-               a.extend(b);
-               a.sort_by_key(|r| r.start_byte);
-               a.dedup();
-               MatchResult::Hunks(a)
-           }
-           (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
-           (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
-           (MatchResult::Boolean(_), MatchResult::Boolean(_)) => MatchResult::Boolean(true),
-       }
-   }
+    /// Combines two successful match results.
+    pub fn combine_with(self, other: MatchResult) -> Self {
+        match (self, other) {
+            (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                a.extend(b);
+                a.sort_by_key(|r| r.start_byte);
+                a.dedup();
+                MatchResult::Hunks(a)
+            }
+            (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
+            (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
+            (MatchResult::Boolean(_), MatchResult::Boolean(_)) => MatchResult::Boolean(true),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,7 +201,10 @@ mod tests {
 
         let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail);
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+        assert!(!evaluator_fail
+            .evaluate(&mut context)
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -206,7 +217,10 @@ mod tests {
 
         let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail);
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+        assert!(!evaluator_fail
+            .evaluate(&mut context)
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -219,6 +233,9 @@ mod tests {
 
         let ast_fail = parse_query("!contains:hello").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail);
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+        assert!(!evaluator_fail
+            .evaluate(&mut context)
+            .unwrap()
+            .is_match());
     }
 }
