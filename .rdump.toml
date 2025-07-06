@@ -1,0 +1,3 @@
+[presets]
+rust_src = "ext:rs & !path:tests/"
+cargo = "name:Cargo.toml"

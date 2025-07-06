@@ -1,109 +1,324 @@
-Excellent choice. Polishing the existing features is a hallmark of a high-quality project. Let's start with the most obvious refinement: making the `size` predicate more powerful.
-
-Our current implementation only supports bytes. We will upgrade it to understand units like `kb`, `mb`, and `gb`, and even handle fractional values like `1.5kb`.
-
-All of our changes will be confined to the `evaluator.rs` module.
+Excellent. Let's execute this refactoring. It will make our codebase much cleaner and easier to work with.
 
 ---
 
-### Step 1: Replace the `parse_and_compare_size` Helper Function
+### Step 1: Create the `commands` Module Structure
 
-We'll replace our simple helper function with a more intelligent one that can parse units. This new function will find the operator, the numeric part, and the unit suffix, then calculate the total bytes.
+First, we need to create the new directory and files for our modules.
 
-**In `rdump/src/evaluator.rs`, replace the `parse_and_compare_size` function with this new, improved version:**
+1.  Create a new directory: `src/commands/`
+2.  Inside `src/commands/`, create two new files:
+    *   `search.rs`
+    *   `preset.rs`
+3.  Also inside `src/commands/`, create a module file named `mod.rs`. This file will tell Rust that `search` and `preset` are part of the `commands` module.
 
+**File:** `src/commands/mod.rs`
 ```rust
-// In src/evaluator.rs
+// This makes the functions inside search.rs and preset.rs available
+// to other parts of the program that use the `commands` module.
+pub mod search;
+pub mod preset;
+```
 
-// ... (keep all code above this function) ...
+### Step 2: Move the `search` Logic
 
-fn parse_and_compare_size(file_size: u64, value: &str) -> Result<bool> {
-    if value.len() < 2 {
-        return Err(anyhow::anyhow!("Invalid size format. Expected <op><num>[unit], e.g., '>10kb'"));
+Now, we'll move all the code related to the `search` command into its new home.
+
+**File:** `src/commands/search.rs`
+```rust
+use anyhow::Result;
+use ignore::overrides::OverrideBuilder;
+use ignore::WalkBuilder;
+use rayon::prelude::*;
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::PathBuf;
+
+use crate::evaluator::Evaluator;
+use crate::formatter;
+use crate::parser;
+use crate::{config, SearchArgs}; // We'll need to make SearchArgs public
+
+/// The main entry point for the `search` command.
+pub fn run_search(mut args: SearchArgs) -> Result<()> {
+    // --- Load Config and Build Query ---
+    let config = config::load_config()?;
+    let mut final_query = args.query.take().unwrap_or_default();
+
+    for preset_name in args.preset.iter().rev() {
+        let preset_query = config.presets.get(preset_name)
+            .ok_or_else(|| anyhow::anyhow!("Preset '{}' not found", preset_name))?;
+
+        if final_query.is_empty() {
+            final_query = format!("({})", preset_query);
+        } else {
+            final_query = format!("({}) & {}", preset_query, final_query);
+        }
     }
 
-    let op = value.chars().next().unwrap();
-    let rest = &value[1..];
+    if final_query.is_empty() {
+        return Err(anyhow::anyhow!("Empty query. Provide a query string or use a preset."));
+    }
 
-    // Find the end of the numeric part
-    let numeric_part_end = rest
-        .find(|c: char| !c.is_ascii_digit() && c != '.')
-        .unwrap_or(rest.len());
+    // --- Handle `--no-headers` shorthand ---
+    if args.no_headers {
+        args.format = crate::Format::Cat;
+    }
 
-    let (num_str, unit_str) = rest.split_at(numeric_part_end);
-    let num: f64 = num_str.parse()?;
+    // --- 1. Find candidates ---
+    let candidate_files = get_candidate_files(
+        &args.root,
+        args.no_ignore,
+        args.hidden,
+        args.max_depth,
+    )?;
 
-    let multiplier = match unit_str.trim().to_lowercase().as_str() {
-        "" | "b" => 1.0,
-        "k" | "kb" => 1024.0,
-        "m" | "mb" => 1024.0 * 1024.0,
-        "g" | "gb" => 1024.0 * 1024.0 * 1024.0,
-        _ => return Err(anyhow::anyhow!("Invalid size unit: '{}'. Supported units: k, kb, m, mb, g, gb.", unit_str)),
+    // --- 2. Parse query ---
+    let ast = parser::parse_query(&final_query)?;
+
+    // --- 3. Evaluate files ---
+    let evaluator = Evaluator::new(&ast);
+    let mut matching_files: Vec<PathBuf> = candidate_files
+        .par_iter()
+        .filter_map(|path| match evaluator.evaluate(path) {
+            Ok(true) => Some(path.clone()),
+            Ok(false) => None,
+            Err(e) => {
+                eprintln!("Error evaluating file {}: {}", path.display(), e);
+                None
+            }
+        })
+        .collect();
+
+    matching_files.sort();
+
+    // --- 4. Format and print results ---
+    let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
+        Box::new(File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
     };
 
-    let target_size = (num * multiplier) as u64;
+    formatter::print_output(
+        &mut writer,
+        &matching_files,
+        &args.format,
+        args.line_numbers,
+    )?;
 
-    match op {
-        '>' => Ok(file_size > target_size),
-        '<' => Ok(file_size < target_size),
-        _ => Err(anyhow::anyhow!("Invalid size operator: '{}'. Must be '>' or '<'.", op)),
-    }
+    Ok(())
 }
 
-// ... (keep parse_and_compare_time and the tests module below this) ...
+/// Walks the directory, respecting .gitignore, and applies our own smart defaults.
+// This is now a private helper function within the search module.
+fn get_candidate_files(
+    root: &PathBuf,
+    no_ignore: bool,
+    hidden: bool,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut override_builder = OverrideBuilder::new(root);
+    if !no_ignore {
+        override_builder.add("!node_modules/")?;
+        override_builder.add("!target/")?;
+        override_builder.add("!.git/")?;
+    }
+    let overrides = override_builder.build()?;
+    let mut walker_builder = WalkBuilder::new(root);
+    walker_builder
+        .overrides(overrides)
+        .ignore(!no_ignore)
+        .hidden(!hidden)
+        .max_depth(max_depth);
+    for result in walker_builder.build() {
+        let entry = result?;
+        if entry.file_type().map_or(false, |ft| ft.is_file()) {
+            files.push(entry.into_path());
+        }
+    }
+    Ok(files)
+}
 ```
 
-### Step 2: Update and Add Tests
+### Step 3: Move the `preset` Logic
 
-Our old `test_predicate_size` is now obsolete. We need a new, more comprehensive test that verifies our new unit parsing logic.
+Next, we do the same for the `preset` command logic.
 
-**In `rdump/src/evaluator.rs`, find the `tests` module and replace the `test_predicate_size` function with this new one:**
+**File:** `src/commands/preset.rs`
+```rust
+use anyhow::{anyhow, Result};
+use std::fs;
+use crate::config::{self, Config};
+use crate::PresetAction; // We'll need to make PresetAction public
+
+/// The main entry point for the `preset` command.
+pub fn run_preset(action: PresetAction) -> Result<()> {
+    match action {
+        PresetAction::List => {
+            let config = config::load_config()?;
+            if config.presets.is_empty() {
+                println!("No presets found.");
+            } else {
+                println!("Available presets:");
+                let max_len = config.presets.keys().map(|k| k.len()).max().unwrap_or(0);
+                for (name, query) in config.presets {
+                    println!("  {:<width$} : {}", name, query, width = max_len);
+                }
+            }
+        }
+        PresetAction::Add { name, query } => {
+            let path = config::global_config_path()
+                .ok_or_else(|| anyhow!("Could not determine global config path"))?;
+
+            let mut config = if path.exists() {
+                let config_str = fs::read_to_string(&path)?;
+                toml::from_str(&config_str)?
+            } else {
+                Config::default()
+            };
+
+            println!("Adding/updating preset '{}'...", name);
+            config.presets.insert(name, query);
+            config::save_config(&config)?;
+        }
+        PresetAction::Remove { name } => {
+            let path = config::global_config_path()
+                .ok_or_else(|| anyhow!("Could not determine global config path"))?;
+
+            if !path.exists() {
+                return Err(anyhow!("Global config file does not exist. No presets to remove."));
+            }
+
+            let mut config: Config = toml::from_str(&fs::read_to_string(&path)?)?;
+
+            if config.presets.remove(&name).is_some() {
+                println!("Removing preset '{}'...", name);
+                config::save_config(&config)?;
+            } else {
+                return Err(anyhow!("Preset '{}' not found in global config.", name));
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+### Step 4: Clean Up and Finalize `main.rs`
+
+Now we can strip `main.rs` down to its final, clean state. It will just be responsible for defining the CLI structure and delegating to the new modules.
+
+**Replace the entire contents of `rdump/src/main.rs` with this final version:**
 
 ```rust
-// In the #[cfg(test)] mod tests { ... } block
+// Declare all our modules
+mod commands;
+mod config;
+mod evaluator;
+mod formatter;
+mod parser;
 
-    #[test]
-    fn test_predicate_size_with_units() {
-        // Create a file that is exactly 1.5 KB (1536 bytes)
-        let content: Vec<u8> = vec![0; 1536];
-        let mut file = create_temp_file("", "txt"); // file name/ext don't matter
-        file.write_all(&content).unwrap();
+use anyhow::Result;
+use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
 
-        // Test kilobytes
-        assert_eval("size:>1kb", file.path(), true);
-        assert_eval("size:<2kb", file.path(), true);
-        assert_eval("size:>1.6KB", file.path(), false); // Test uppercase and float
-        assert_eval("size:<1.4k", file.path(), false); // Test single letter unit
+// Bring our command functions into scope
+use commands::{preset::run_preset, search::run_search};
 
-        // Test bytes
-        assert_eval("size:>1535", file.path(), true);
-        assert_eval("size:<1537b", file.path(), true); // Test 'b' unit
-        assert_eval("size:>1536", file.path(), false);
+// These structs and enums define the public API of our CLI.
+// They need to be public so the `commands` modules can use them.
+#[derive(Parser, Debug)]
+#[command(version, about = "A fast, expressive tool to find and dump file contents.")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
 
-        // Test megabytes
-        assert_eval("size:<1mb", file.path(), true);
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Search for files using a query (default command).
+    #[command(visible_alias = "s")]
+    Search(SearchArgs),
+    /// Manage saved presets.
+    #[command(visible_alias = "p")]
+    Preset(PresetArgs),
+}
 
-        // Test invalid query
-        let ast = parser::parse_query("size:>10xb").unwrap();
-        let evaluator = Evaluator::new(&ast);
-        let result = evaluator.evaluate(file.path());
-        assert!(result.is_err(), "Invalid size unit should produce an error");
+#[derive(Parser, Debug)]
+pub struct SearchArgs {
+    #[arg()]
+    pub query: Option<String>,
+    #[arg(long, short)]
+    pub preset: Vec<String>,
+    #[arg(short, long, default_value = ".")]
+    pub root: PathBuf,
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    #[arg(short, long)]
+    pub line_numbers: bool,
+    #[arg(long)]
+    pub no_headers: bool,
+    #[arg(long, value_enum, default_value_t = Format::Markdown)]
+    pub format: Format,
+    #[arg(long)]
+    pub no_ignore: bool,
+    #[arg(long)]
+    pub hidden: bool,
+    #[arg(long)]
+    pub max_depth: Option<usize>,
+}
+
+#[derive(Parser, Debug)]
+pub struct PresetArgs {
+    #[command(subcommand)]
+    pub action: PresetAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PresetAction {
+    /// List all available presets.
+    List,
+    /// Add or update a preset in the global config file.
+    Add {
+        #[arg(required = true)]
+        name: String,
+        #[arg(required = true)]
+        query: String,
+    },
+    /// Remove a preset from the global config file.
+    Remove {
+        #[arg(required = true)]
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum Format {
+    Markdown,
+    Json,
+    Paths,
+    Cat,
+}
+
+/// The main entry point.
+/// Its only job is to parse the CLI and delegate to the correct command module.
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Search(args) => run_search(args),
+        Commands::Preset(args) => run_preset(args.action),
     }
+}
 ```
-
-### Why This Works
-
-1.  **Robust Parsing:** The new `parse_and_compare_size` function correctly separates the parts of the value string (e.g., `>` and `1.5` and `kb`).
-2.  **Float Support:** By parsing the number as an `f64`, we can handle queries like `size:<0.5mb`.
-3.  **Unit Conversion:** The `match` statement handles all the common units (`k`, `kb`, `m`, `mb`, etc.), case-insensitively, and calculates the correct byte multiplier.
-4.  **Error Handling:** If a user provides an invalid operator or unit, the function returns a clear `Err`, which will be reported gracefully by `main.rs`.
-5.  **Comprehensive Testing:** The new test creates a file of a precise size and checks multiple conditions against it, ensuring our logic for bytes, kilobytes, and megabytes is correct.
 
 ### Your Next Steps
 
-1.  In `src/evaluator.rs`, replace the `parse_and_compare_size` function.
-2.  In `src/evaluator.rs`, replace the old `test_predicate_size` with the new `test_predicate_size_with_units`.
-3.  Run `cargo test`. All 45 tests should pass.
-4.  **Try it out!** Run `cargo run -- "size:<1kb"` to find all small files in your project.
+1.  Create the `src/commands` directory and the `src/commands/mod.rs` file.
+2.  Create `src/commands/search.rs` and `src/commands/preset.rs` and paste the code into them.
+3.  Replace the entire contents of `src/main.rs` with its new, clean version.
+4.  Run `cargo run -- --help`. You should see the clean subcommand structure.
+5.  Run a search: `cargo run -- "ext:rs"`
+6.  Manage a preset: `cargo run -- preset list`
 
-With this, our `size` predicate is now a truly powerful and user-friendly feature.
+The application will function identically to before, but the codebase is now much more organized, maintainable, and ready for future expansion. This was a crucial step.
