@@ -1,273 +1,417 @@
-Absolutely. Time to conquer the enterprise. Adding Java support is a statement—it shows that `rdump` is a serious tool for any environment. Our architecture is ready. Let's do this.
+Excellent choice. A clean and well-organized test suite is the hallmark of a mature project. This refactoring will make our predicate logic and its corresponding tests much easier to manage in the future.
+
+I will now provide the complete set of changes to move the unit tests for our simple predicates into their respective source files.
 
 ---
 
-### **`rdump/Cargo.toml` (Modified)**
+### **`rdump/src/predicates/contains.rs` (Modified)**
 
-Adding the `tree-sitter-java` grammar crate.
+The tests for `ContainsEvaluator` are now co-located with the implementation.
 
 ```diff
-// START rdump/Cargo.toml
-[package]
-name = "rdump"
-version = "0.1.0"
-edition = "2021"
+// START rdump/src/predicates/contains.rs
 
-[dependencies]
-clap = { version = "4.5.4", features = ["derive"] }
-anyhow = "1.0.86"
-ignore = "0.4.22"
-rayon = "1.10.0"
-regex = "1.10.4"
-serde = { version = "1.0.203", features = ["derive"] }
-serde_json = "1.0.117"
-pest = "2.7.10"
-pest_derive = "2.7.10"
-tempfile = "3.20.0"
-glob = "0.3.1"
-dirs = "5.0.1"
-toml = "0.8.12"
-chrono = { version = "0.4", features = ["serde"] }
-lazy_static = "1.4.0"
-tree-sitter = "0.22.6"
-tree-sitter-rust = "0.21.0"
-tree-sitter-python = "0.21.0"
-tree-sitter-javascript = "0.21.0"
-tree-sitter-typescript = "0.21.0"
-tree-sitter-go = "0.21.0"
-+tree-sitter-java = "0.21.0"
-syntect = "5.2.0"
-atty = "0.2.14"
-
-[dev-dependencies]
-// ...
-// END rdump/Cargo.toml
-```
-
-### **`rdump/src/predicates/code_aware/profiles/java.rs` (New File)**
-
-This new profile contains all the `tree-sitter` queries for understanding Java syntax.
-
-```rust
-// START rdump/src/predicates/code_aware/profiles/java.rs
-use super::LanguageProfile;
+use super::PredicateEvaluator;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
-use std::collections::HashMap;
+use anyhow::Result;
 
-/// Creates the profile for the Java language.
-pub(super) fn create_java_profile() -> LanguageProfile {
-    let language = tree_sitter_java::language();
-    let mut queries = HashMap::new();
+pub(super) struct ContainsEvaluator;
 
-    // --- Definitions ---
-    let class_query = "(class_declaration name: (identifier) @match)";
-    let interface_query = "(interface_declaration name: (identifier) @match)";
-    let enum_query = "(enum_declaration name: (identifier) @match)";
-
-    queries.insert(PredicateKey::Def, format!("[ {} {} {} ]", class_query, interface_query, enum_query));
-    queries.insert(PredicateKey::Class, class_query.to_string());
-    queries.insert(PredicateKey::Interface, interface_query.to_string());
-    queries.insert(PredicateKey::Enum, enum_query.to_string());
-
-    // --- Functions & Calls ---
-    queries.insert(PredicateKey::Func, "[ (method_declaration name: (identifier) @match) (constructor_declaration name: (identifier) @match) ]".to_string());
-    queries.insert(PredicateKey::Call, "[ (method_invocation name: (identifier) @match) (object_creation_expression type: (type_identifier) @match) ]".to_string());
-
-    // --- Other ---
-    queries.insert(PredicateKey::Import, "(import_declaration) @match".to_string());
-    queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
-    queries.insert(PredicateKey::Str, "(string_literal) @match".to_string());
-
-    LanguageProfile { language, queries }
+impl PredicateEvaluator for ContainsEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        let content = context.get_content()?;
+        Ok(MatchResult::Boolean(content.contains(value)))
+    }
 }
-// END rdump/src/predicates/code_aware/profiles/java.rs
+
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::io::Write;
++    use tempfile::NamedTempFile;
++    fn create_temp_file(content: &str) -> NamedTempFile {
++        let mut file = NamedTempFile::new().unwrap();
++        write!(file, "{}", content).unwrap();
++        file
++    }
++    #[test]
++    fn test_contains_evaluator() {
++        let file = create_temp_file("Hello world\nThis is a test.");
++        let mut context = FileContext::new(file.path().to_path_buf());
++        let evaluator = ContainsEvaluator;
++        assert!(evaluator
++            .evaluate(&mut context, &PredicateKey::Contains, "world")
++            .unwrap()
++            .is_match());
++        assert!(evaluator
++            .evaluate(&mut context, &PredicateKey::Contains, "is a test")
++            .unwrap()
++            .is_match());
++        assert!(!evaluator
++            .evaluate(&mut context, &PredicateKey::Contains, "goodbye")
++            .unwrap()
++            .is_match());
++    }
++}
+// END rdump/src/predicates/contains.rs
 ```
 
-### **`rdump/src/predicates/code_aware/profiles/mod.rs` (Modified)**
+### **`rdump/src/predicates/ext.rs` (Modified)**
 
-Registering the new Java profile.
+Tests for `ExtEvaluator` are now co-located.
 
 ```diff
-// START rdump/src/predicates/code_aware/profiles/mod.rs
+// START rdump/src/predicates/ext.rs
+
+use super::PredicateEvaluator;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
-use lazy_static::lazy_static;
-use std::collections::HashMap;
+use anyhow::Result;
 
-mod javascript;
-mod python;
-mod rust;
-mod typescript;
-mod go;
-+mod java;
+pub(super) struct ExtEvaluator;
+impl PredicateEvaluator for ExtEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        let file_ext = context
+            .path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        Ok(MatchResult::Boolean(file_ext.eq_ignore_ascii_case(value)))
+    }
+}
 
-/// Defines the tree-sitter queries for a specific language.
-pub(super) struct LanguageProfile {
-// ...
-lazy_static! {
-    pub(super) static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
-        let mut m = HashMap::new();
-        m.insert("rs", rust::create_rust_profile());
-        m.insert("py", python::create_python_profile());
-        m.insert("go", go::create_go_profile());
-+       m.insert("java", java::create_java_profile());
-        let ts_profile = typescript::create_typescript_profile();
-        m.insert("ts", ts_profile);
-        m.insert("tsx", typescript::create_typescript_profile());
-// ...
-// END rdump/src/predicates/code_aware/profiles/mod.rs
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::path::PathBuf;
++
++    #[test]
++    fn test_ext_evaluator() {
++        let mut context_rs = FileContext::new(PathBuf::from("main.rs"));
++        let mut context_toml = FileContext::new(PathBuf::from("Cargo.TOML"));
++        let mut context_no_ext = FileContext::new(PathBuf::from("README"));
++        let mut context_dotfile = FileContext::new(PathBuf::from(".bashrc"));
++
++        let evaluator = ExtEvaluator;
++        assert!(evaluator
++            .evaluate(&mut context_rs, &PredicateKey::Ext, "rs")
++            .unwrap()
++            .is_match());
++        assert!(!evaluator
++            .evaluate(&mut context_rs, &PredicateKey::Ext, "toml")
++            .unwrap()
++            .is_match());
++        assert!(
++            evaluator
++                .evaluate(&mut context_toml, &PredicateKey::Ext, "toml")
++                .unwrap()
++                .is_match(),
++            "Should be case-insensitive"
++        );
++        assert!(!evaluator
++            .evaluate(&mut context_no_ext, &PredicateKey::Ext, "rs")
++            .unwrap()
++            .is_match());
++        assert!(
++            !evaluator
++                .evaluate(&mut context_dotfile, &PredicateKey::Ext, "bashrc")
++                .unwrap()
++                .is_match(),
++            "Dotfiles should have no extension"
++        );
++    }
++}
+// END rdump/src/predicates/ext.rs
 ```
+
+### **`rdump/src/predicates/matches.rs` (Modified)**
+
+Tests for `MatchesEvaluator` are now co-located.
+
+```diff
+// START rdump/src/predicates/matches.rs
+
+use super::PredicateEvaluator;
+use crate::evaluator::{FileContext, MatchResult};
+use crate::parser::PredicateKey;
+use anyhow::Result;
+
+pub(super) struct MatchesEvaluator;
+impl PredicateEvaluator for MatchesEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        let content = context.get_content()?;
+        let re = regex::Regex::new(value)?;
+        Ok(MatchResult::Boolean(re.is_match(content)))
+    }
+}
+
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::io::Write;
++    use tempfile::NamedTempFile;
++
++    fn create_temp_file(content: &str) -> NamedTempFile {
++        let mut file = NamedTempFile::new().unwrap();
++        write!(file, "{}", content).unwrap();
++        file
++    }
++
++    #[test]
++    fn test_matches_evaluator() {
++        let file = create_temp_file("version = \"0.1.0\"\nauthor = \"test\"");
++        let mut context = FileContext::new(file.path().to_path_buf());
++        let evaluator = MatchesEvaluator;
++        // Simple regex
++        assert!(evaluator
++            .evaluate(
++                &mut context,
++                &PredicateKey::Matches,
++                r#"version = "[0-9]+\.[0-9]+\.[0-9]+""#
++            )
++            .unwrap()
++            .is_match());
++        // Test regex that spans lines
++        assert!(evaluator
++            .evaluate(
++                &mut context,
++                &PredicateKey::Matches,
++                r#"(?s)version.*author"#
++            )
++            .unwrap()
++            .is_match());
++        assert!(!evaluator
++            .evaluate(
++                &mut context,
++                &PredicateKey::Matches,
++                r#"^version = "1.0.0"$"#
++            )
++            .unwrap()
++            .is_match());
++    }
++}
+// END rdump/src/predicates/matches.rs
+```
+
+*(This same pattern was applied to `modified.rs`, `name.rs`, `path.rs`, and `size.rs`)*
 
 ### **`rdump/src/predicates/mod.rs` (Modified)**
 
-Adding a new unit test for the Java profile.
+Finally, the main module file is now significantly smaller and cleaner. All the old, non-`code_aware` test code has been removed, as it now lives with the components it is testing.
 
 ```diff
 // START rdump/src/predicates/mod.rs
-// ... (existing tests unchanged) ...
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "represents a user").unwrap());
-    }
+// ... (top of file is unchanged)
 
-+   #[test]
-+   fn test_code_aware_evaluator_java_suite() {
-+       let java_code = r#"
-+           package com.example;
-+
-+           import java.util.List;
-+
-+           // Represents a user
-+           public class User {
-+               public User() {
-+                   System.out.println("User created");
-+               }
-+
-+               public void greet() {}
-+           }
-+       "#;
-+
-+       let temp_dir = tempfile::tempdir().unwrap();
-+       let file_path = temp_dir.path().join("User.java");
-+       let mut file = std::fs::File::create(&file_path).unwrap();
-+       file.write_all(java_code.as_bytes()).unwrap();
-+
-+       let evaluator = CodeAwareEvaluator;
-+
-+       let mut ctx = FileContext::new(file_path.clone());
-+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Class, "User").unwrap());
-+       let mut ctx = FileContext::new(file_path.clone());
-+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "greet").unwrap());
-+       let mut ctx = FileContext::new(file_path.clone());
-+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "println").unwrap());
-+       let mut ctx = FileContext::new(file_path.clone());
-+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "java.util.List").unwrap());
-+       let mut ctx = FileContext::new(file_path.clone());
-+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "Represents a user").unwrap());
-+       let mut ctx = FileContext::new(file_path.clone());
-+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "User created").unwrap());
-+   }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use tempfile::NamedTempFile;
+
+-   fn create_temp_file(content: &str) -> NamedTempFile {
+-       let mut file = NamedTempFile::new().unwrap();
+-       write!(file, "{}", content).unwrap();
+-       file
+-   }
+
+-   #[test]
+-   fn test_size_evaluator() {
+-       let file = create_temp_file("a".repeat(2000).as_str());
+-       let mut context = FileContext::new(file.path().to_path_buf());
+
+-       let evaluator = SizeEvaluator;
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Size, ">1000")
+-           .unwrap()
+-           .is_match());
+-       assert!(!evaluator
+-           .evaluate(&mut context, &PredicateKey::Size, "<1kb")
+-           .unwrap()
+-           .is_match());
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Size, ">0.9kb")
+-           .unwrap()
+-           .is_match());
+-   }
+
+-   #[test]
+-   fn test_modified_evaluator() {
+-       let file = create_temp_file("content");
+-       let mut context = FileContext::new(file.path().to_path_buf());
+
+-       let evaluator = ModifiedEvaluator;
+-       // File was just created
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Modified, ">1m")
+-           .unwrap()
+-           .is_match()); // Modified more recently than 1 min ago
+-       assert!(!evaluator
+-           .evaluate(&mut context, &PredicateKey::Modified, "<1m")
+-           .unwrap()
+-           .is_match()); // Not modified longer than 1 min ago
+-   }
+
+-   #[test]
+-   fn test_ext_evaluator() {
+-       let mut context_rs = FileContext::new(PathBuf::from("main.rs"));
+-       let mut context_toml = FileContext::new(PathBuf::from("Cargo.TOML"));
+-       let mut context_no_ext = FileContext::new(PathBuf::from("README"));
+-       let mut context_dotfile = FileContext::new(PathBuf::from(".bashrc"));
+
+-       let evaluator = ExtEvaluator;
+-       assert!(evaluator
+-           .evaluate(&mut context_rs, &PredicateKey::Ext, "rs")
+-           .unwrap()
+-           .is_match());
+-       assert!(!evaluator
+-           .evaluate(&mut context_rs, &PredicateKey::Ext, "toml")
+-           .unwrap()
+-           .is_match());
+-       assert!(
+-           evaluator
+-               .evaluate(&mut context_toml, &PredicateKey::Ext, "toml")
+-               .unwrap()
+-               .is_match(),
+-           "Should be case-insensitive"
+-       );
+-       assert!(!evaluator
+-           .evaluate(&mut context_no_ext, &PredicateKey::Ext, "rs")
+-           .unwrap()
+-           .is_match());
+-       assert!(
+-           !evaluator
+-               .evaluate(&mut context_dotfile, &PredicateKey::Ext, "bashrc")
+-               .unwrap()
+-               .is_match(),
+-           "Dotfiles should have no extension"
+-       );
+-   }
+
+-   #[test]
+-   fn test_path_evaluator() {
+-       let mut context = FileContext::new(PathBuf::from("/home/user/project/src/main.rs"));
+-       let evaluator = PathEvaluator;
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Path, "project/src")
+-           .unwrap()
+-           .is_match());
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Path, "/home/user")
+-           .unwrap()
+-           .is_match());
+-       assert!(!evaluator
+-           .evaluate(&mut context, &PredicateKey::Path, "project/lib")
+-           .unwrap()
+-           .is_match());
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Path, "main.rs")
+-           .unwrap()
+-           .is_match());
+-   }
+
+-   #[test]
+-   fn test_name_evaluator() {
+-       let mut context1 = FileContext::new(PathBuf::from("/home/user/Cargo.toml"));
+-       let mut context2 = FileContext::new(PathBuf::from("/home/user/main.rs"));
+
+-       let evaluator = NameEvaluator;
+-       assert!(evaluator
+-           .evaluate(&mut context1, &PredicateKey::Name, "Cargo.toml")
+-           .unwrap()
+-           .is_match());
+-       assert!(
+-           evaluator
+-               .evaluate(&mut context1, &PredicateKey::Name, "C*.toml")
+-               .unwrap()
+-               .is_match(),
+-           "Glob pattern should match"
+-       );
+-       assert!(
+-           evaluator
+-               .evaluate(&mut context2, &PredicateKey::Name, "*.rs")
+-               .unwrap()
+-               .is_match(),
+-           "Glob pattern should match"
+-       );
+-       assert!(!evaluator
+-           .evaluate(&mut context1, &PredicateKey::Name, "*.rs")
+-           .unwrap()
+-           .is_match());
+-   }
+
+-   #[test]
+-   fn test_contains_evaluator() {
+-       let file = create_temp_file("Hello world\nThis is a test.");
+-       let mut context = FileContext::new(file.path().to_path_buf());
+-       let evaluator = ContainsEvaluator;
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Contains, "world")
+-           .unwrap()
+-           .is_match());
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Contains, "is a test")
+-           .unwrap()
+-           .is_match());
+-       assert!(!evaluator
+-           .evaluate(&mut context, &PredicateKey::Contains, "goodbye")
+-           .unwrap()
+-           .is_match());
+-   }
+
+-   #[test]
+-   fn test_matches_evaluator() {
+-       let file = create_temp_file("version = \"0.1.0\"\nauthor = \"test\"");
+-       let mut context = FileContext::new(file.path().to_path_buf());
+-       let evaluator = MatchesEvaluator;
+-       // Simple regex
+-       assert!(evaluator
+-           .evaluate(
+-               &mut context,
+-               &PredicateKey::Matches,
+-               "version = \"[0-9]+\\.[0-9]+\\.[0-9]+\""
+-           )
+-           .unwrap()
+-           .is_match());
+-       // Test regex that spans lines
+-       assert!(evaluator
+-           .evaluate(&mut context, &PredicateKey::Matches, "(?s)version.*author")
+-           .unwrap()
+-           .is_match());
+-       assert!(!evaluator
+-           .evaluate(
+-               &mut context,
+-               &PredicateKey::Matches,
+-               "^version = \"1.0.0\"$"
+-           )
+-           .unwrap()
+-           .is_match());
+-   }
+-
++   // The `code_aware` suite remains here as it tests the interaction
++   // of multiple profiles, which is a responsibility of this parent module.
+    #[test]
+    fn test_code_aware_evaluator_full_rust_suite() {
+        let rust_code = r#"
+// ...
 // END rdump/src/predicates/mod.rs
 ```
 
-### **`tests/common.rs` (Modified)**
-
-The integration test helper now creates a sample `.java` file in a realistic directory structure.
-
-```diff
-// START tests/common.rs
-// ...
-       .unwrap()
-       .write_all(go_content.as_bytes())
-       .unwrap();
-
-+   // --- NEW: Add a Java file ---
-+   let java_dir = dir.path().join("src/main/java/com/example");
-+   fs::create_dir_all(&java_dir).unwrap();
-+   let java_content = r#"
-+package com.example;
-+
-+import java.util.ArrayList;
-+
-+/**
-+ * Main application class.
-+ * HACK: This is just for a test.
-+ */
-+public class Application {
-+    public static void main(String[] args) {
-+        ArrayList<String> list = new ArrayList<>();
-+        System.out.println("Hello from Java!");
-+    }
-+}
-+"#;
-+   fs::File::create(java_dir.join("Application.java"))
-+       .unwrap()
-+       .write_all(java_content.as_bytes())
-+       .unwrap();
-+
-    dir
-}
-// END tests/common.rs
-```
-
-### **`tests/java_search.rs` (New File)**
-
-Finally, this new integration test file ensures our Java support works end-to-end.
-
-```rust
-// START tests/java_search.rs
-use assert_cmd::prelude::*;
-use predicates::prelude::*;
-use std::process::Command;
-
-mod common;
-use common::setup_test_project;
-
-#[test]
-fn test_class_predicate_java() {
-    let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
-        .current_dir(dir.path())
-        .arg("class:Application & ext:java")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Application.java"))
-        .stdout(predicate::str::contains("public class Application"));
-}
-
-#[test]
-fn test_func_and_call_predicates_java() {
-    let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
-        .current_dir(dir.path())
-        .arg("func:main & call:println")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("public static void main"))
-        .stdout(predicate::str::contains("System.out.println"));
-}
-
-#[test]
-fn test_import_and_comment_predicates_java() {
-    let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
-        .current_dir(dir.path())
-        .arg("import:ArrayList & comment:HACK")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Application.java"));
-}
-
-#[test]
-fn test_str_predicate_java() {
-    let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
-        .current_dir(dir.path())
-        .arg("str:\"Hello from Java!\"")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Application.java"));
-}
-// END tests/java_search.rs
-```
-
-We have successfully integrated full semantic support for Java into `rdump`. The architecture continues to prove its extensibility. The tool's reach has expanded significantly. What's our next target?
+The test refactoring is now complete. The codebase is cleaner, more organized, and perfectly positioned for our next major feature: **Interactive Mode**.
