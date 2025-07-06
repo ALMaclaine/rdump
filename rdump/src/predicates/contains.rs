@@ -2,6 +2,7 @@ use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
+use tree_sitter::Range;
 
 pub(super) struct ContainsEvaluator;
 
@@ -13,7 +14,24 @@ impl PredicateEvaluator for ContainsEvaluator {
         value: &str,
     ) -> Result<MatchResult> {
         let content = context.get_content()?;
-        Ok(MatchResult::Boolean(content.contains(value)))
+        let mut ranges = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            if line.contains(value) {
+                let start_byte = content.lines().take(i).map(|l| l.len() + 1).sum();
+                let end_byte = start_byte + line.len();
+                let range = Range {
+                    start_byte,
+                    end_byte,
+                    start_point: tree_sitter::Point { row: i, column: 0 },
+                    end_point: tree_sitter::Point {
+                        row: i,
+                        column: line.len(),
+                    },
+                };
+                ranges.push(range);
+            }
+        }
+        Ok(MatchResult::Hunks(ranges))
     }
 }
 
