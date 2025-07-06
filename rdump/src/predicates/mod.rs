@@ -65,8 +65,7 @@ pub fn create_predicate_registry(
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::path::PathBuf;
-    use tempfile::NamedTempFile;
+    
 
    // The `code_aware` suite remains here as it tests the interaction
    // of multiple profiles, which is a responsibility of this parent module.

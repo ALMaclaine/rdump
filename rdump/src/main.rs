@@ -159,12 +159,18 @@ pub enum PresetAction {
 
 #[derive(Debug, Clone, ValueEnum)]
 pub enum Format {
+    /// Human-readable markdown with file headers
     Markdown,
+    /// Machine-readable JSON
     Json,
+    /// A simple list of matching file paths
     Paths,
+    /// Raw concatenated file content, for piping
     Cat,
+    /// `ls`-like output with file metadata
     Find,
-   Hunks,
+    /// Show only the specific code blocks ("hunks") that match a semantic query
+    Hunks,
 }
 
 /// The main entry point.

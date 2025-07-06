@@ -169,38 +169,12 @@ mod tests {
 // ... (existing tests are unchanged)
 // ...
     use super::*;
-    use std::collections::HashSet;
+    
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
 
-    fn create_test_fs() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-
-        // Create files and directories
-        fs::File::create(root.join("file_a.txt")).unwrap();
-        fs::File::create(root.join(".hidden_file")).unwrap();
-
-        fs::create_dir(root.join("sub")).unwrap();
-        fs::File::create(root.join("sub/file_b.txt")).unwrap();
-
-        fs::create_dir_all(root.join("sub/sub2")).unwrap();
-        fs::File::create(root.join("sub/sub2/file_c.log")).unwrap();
-
-        fs::create_dir_all(root.join("target/debug")).unwrap();
-        fs::File::create(root.join("target/debug/app.exe")).unwrap();
-
-        fs::create_dir(root.join("logs")).unwrap();
-        fs::File::create(root.join("logs/yesterday.log")).unwrap();
-
-        let mut gitignore = fs::File::create(root.join(".gitignore")).unwrap();
-        writeln!(gitignore, "*.log").unwrap();
-        writeln!(gitignore, "logs/").unwrap();
-        writeln!(gitignore, "target/").unwrap();
-
-        (dir, root)
-    }
+    
 
     // Helper to run get_candidate_files and return a sorted list of file names
     fn get_sorted_file_names(
