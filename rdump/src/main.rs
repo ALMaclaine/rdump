@@ -2,13 +2,27 @@ mod evaluator;
 mod formatter;
 mod parser;
 
+use std::fs::File;
+use std::io::{self, Write};
+
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use evaluator::Evaluator;
 use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use std::path::PathBuf;
+
+
+
+// NEW: An enum to represent our output formats for clap
+#[derive(Debug, Clone, ValueEnum)]
+enum Format {
+    Markdown,
+    Json,
+    Paths,
+    Cat,
+}
 
 /// A fast, expressive tool to find and dump file contents for LLM context using a query language.
 #[derive(Parser, Debug)]
@@ -30,21 +44,32 @@ struct Cli {
     #[arg(short, long)]
     line_numbers: bool,
 
-    /// Do not print file path headers in the output.
+    /// A shorthand for '--format cat'.
     #[arg(long)]
     no_headers: bool,
+
+    /// The output format for the results.
+    #[arg(long, value_enum, default_value_t = Format::Markdown)]
+    format: Format,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
 
-    // --- 1. Find all potential files to check ---
+
+fn main() -> Result<()> {
+    let mut cli = Cli::parse();
+
+    // --- Handle `--no-headers` shorthand ---
+    if cli.no_headers {
+        cli.format = Format::Cat;
+    }
+
+    // --- 1. Find candidates ---
     let candidate_files = get_candidate_files(&cli.root)?;
 
-    // --- 2. Parse the query string ---
+    // --- 2. Parse query ---
     let ast = parser::parse_query(&cli.query)?;
 
-    // --- 3. Evaluate files against the query in parallel ---
+    // --- 3. Evaluate files ---
     let evaluator = Evaluator::new(&ast);
     let mut matching_files: Vec<PathBuf> = candidate_files
         .par_iter()
@@ -58,17 +83,22 @@ fn main() -> Result<()> {
         })
         .collect();
 
-    // Sort the final list for deterministic output
     matching_files.sort();
 
     // --- 4. Format and print results ---
-    // Get a handle to stdout and pass it to the testable formatter.
-    let mut stdout = std::io::stdout();
+    // This `Box<dyn Write>` lets us decide at runtime whether to write
+    // to stdout or a file, without changing the formatter's code.
+    let mut writer: Box<dyn Write> = if let Some(output_path) = &cli.output {
+        Box::new(File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
+    };
+
     formatter::print_output(
-        &mut stdout,
+        &mut writer,
         &matching_files,
+        &cli.format,
         cli.line_numbers,
-        cli.no_headers,
     )?;
 
     Ok(())

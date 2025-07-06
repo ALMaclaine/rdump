@@ -1,13 +1,75 @@
+Excellent. Let's get this done. We'll implement the full output functionality as planned. This will involve updating the CLI, refactoring the formatter to handle different formats, and connecting it all in `main`.
+
+---
+
+### Step 1: Update the CLI in `main.rs`
+
+First, we need to teach `clap` about our new `--format` option. To do this cleanly, we'll create a `Format` enum and tell `clap` how to parse it. We'll also update the `Cli` struct.
+
+**Replace the `Cli` struct and add the `Format` enum in `rdump/src/main.rs`.**
+
+```rust
+// In src/main.rs
+
+// Add this to your `use` statements at the top
+use clap::ValueEnum;
+
+// NEW: An enum to represent our output formats for clap
+#[derive(Debug, Clone, ValueEnum)]
+enum Format {
+    Markdown,
+    Json,
+    Paths,
+    Cat,
+}
+
+/// A fast, expressive tool to find and dump file contents for LLM context using a query language.
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Cli {
+    /// The query string to search for files.
+    #[arg(required = true)]
+    query: String,
+
+    /// The root directory to start the search from.
+    #[arg(short, long, default_value = ".")]
+    root: PathBuf,
+
+    /// Output file path. If not provided, output is written to stdout.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+
+    /// Add line numbers to the output.
+    #[arg(short, long)]
+    line_numbers: bool,
+
+    /// A shorthand for '--format cat'.
+    #[arg(long)]
+    no_headers: bool,
+
+    /// The output format for the results.
+    #[arg(long, value_enum, default_value_t = Format::Markdown)]
+    format: Format,
+}
+```
+
+### Step 2: Refactor the Formatter
+
+Now, we'll completely rewrite `formatter.rs` to handle the different formats. It will now take our new `Format` enum and use a `match` statement to decide what to do.
+
+**Replace the entire contents of `rdump/src/formatter.rs` with this new version.**
+
+```rust
 use anyhow::{Result, Context};
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use serde::Serialize;
 
 // We need to pass the format enum from main.rs
 use crate::Format;
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize)]
 struct FileOutput {
     path: String,
     content: String,
@@ -81,6 +143,7 @@ mod tests {
     use super::*;
     use tempfile::NamedTempFile;
     use std::io::Write;
+    use std::path::PathBuf;
 
     fn create_temp_file_with_content(content: &str) -> NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().unwrap();
@@ -141,3 +204,81 @@ mod tests {
         assert_eq!(output_data[1].content, "some text");
     }
 }
+```
+
+### Step 3: Finalize `main.rs`
+
+Now we'll update the `main` function to handle the `--output` flag and pass the correct format to our new formatter. This uses a nice pattern called a "boxed trait object" (`Box<dyn Write>`) to seamlessly switch between writing to the console and writing to a file.
+
+**Replace the `main` function in `rdump/src/main.rs` with this final version.**
+
+```rust
+// In src/main.rs
+
+// Add these to your `use` statements at the top
+use std::fs::File;
+use std::io::{self, Write};
+
+fn main() -> Result<()> {
+    let mut cli = Cli::parse();
+
+    // --- Handle `--no-headers` shorthand ---
+    if cli.no_headers {
+        cli.format = Format::Cat;
+    }
+
+    // --- 1. Find candidates ---
+    let candidate_files = get_candidate_files(&cli.root)?;
+
+    // --- 2. Parse query ---
+    let ast = parser::parse_query(&cli.query)?;
+
+    // --- 3. Evaluate files ---
+    let evaluator = Evaluator::new(&ast);
+    let mut matching_files: Vec<PathBuf> = candidate_files
+        .par_iter()
+        .filter_map(|path| match evaluator.evaluate(path) {
+            Ok(true) => Some(path.clone()),
+            Ok(false) => None,
+            Err(e) => {
+                eprintln!("Error evaluating file {}: {}", path.display(), e);
+                None
+            }
+        })
+        .collect();
+
+    matching_files.sort();
+
+    // --- 4. Format and print results ---
+    // This `Box<dyn Write>` lets us decide at runtime whether to write
+    // to stdout or a file, without changing the formatter's code.
+    let mut writer: Box<dyn Write> = if let Some(output_path) = &cli.output {
+        Box::new(File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
+    };
+
+    formatter::print_output(
+        &mut writer,
+        &matching_files,
+        &cli.format,
+        cli.line_numbers,
+    )?;
+
+    Ok(())
+}
+```
+
+### Your Next Steps
+
+1.  Update the `Cli` struct and add the `Format` enum in `src/main.rs`.
+2.  Replace the entire contents of `src/formatter.rs` with the new version.
+3.  Replace the `main` function in `src/main.rs` with the final version.
+4.  Run `cargo test`. All tests should pass.
+5.  **Run the finished tool!**
+    *   `cargo run -- "ext:toml"`
+    *   `cargo run -- --format=json "ext:toml"`
+    *   `cargo run -- --format=paths "ext:toml"`
+    *   `cargo run -- --output=my_dump.txt "ext:toml"` (This will create a file!)
+
+With this, your tool is now fully spec-complete for v1.0, minus a few of the more advanced predicates and flags. Congratulations
