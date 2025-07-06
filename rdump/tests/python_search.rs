@@ -73,3 +73,16 @@ fn test_str_predicate_python() {
         .success()
         .stdout(predicate::str::contains("helper.py"));
 }
+
+#[test]
+fn test_call_predicate_python() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("call:run_helper | call:do_setup")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("if __name__ == \"__main__\":"))
+        .stdout(predicate::str::contains("self.path ="));
+}

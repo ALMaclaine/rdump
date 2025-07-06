@@ -55,7 +55,8 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Trait, code_evaluator.clone());
     registry.insert(PredicateKey::Type, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
-    registry.insert(PredicateKey::Str, code_evaluator);
+    registry.insert(PredicateKey::Str, code_evaluator.clone());
+   registry.insert(PredicateKey::Call, code_evaluator);
 
     registry
 }
@@ -228,7 +229,6 @@ mod tests {
         let rust_code = r#"
             // TODO: refactor this module
             use std::collections::HashMap;
-            use serde::{Serialize, Deserialize};
 
             type ConfigMap = HashMap<String, String>;
 
@@ -238,6 +238,7 @@ mod tests {
             }
             fn launch_app() {
                 let msg = "Launching...";
+                println!("{}", msg);
             }
         "#;
 
@@ -259,6 +260,14 @@ mod tests {
         // --- Functions ---
         let mut ctx = FileContext::new(file_path.clone());
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "run").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "launch_app").unwrap());
+
+       // --- Calls ---
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "println").unwrap(), "Should find function call");
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Call, "launch_app").unwrap(), "Should not find the definition as a call");
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
@@ -272,13 +281,17 @@ mod tests {
         let python_code = r#"
 # FIXME: use a real database
 import os
-from sys import argv
 
 class DataProcessor:
     def __init__(self):
         self.api_key = "secret_key"
+        self.connect()
+
+    def connect(self):
+        print("Connecting...")
 
 def process_data():
+    proc = DataProcessor()
     print("Processing")
         "#;
 
@@ -296,6 +309,16 @@ def process_data():
         // --- Functions ---
         let mut ctx = FileContext::new(file_path.clone());
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "connect").unwrap());
+
+       // --- Calls ---
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "print").unwrap(), "Should find multiple calls to print");
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "DataProcessor").unwrap(), "Should find constructor call");
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "connect").unwrap(), "Should find method call");
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
@@ -305,19 +328,55 @@ def process_data():
     }
 
     #[test]
+    fn test_code_aware_evaluator_javascript_suite() {
+        let js_code = r#"
+            import { open } from 'fs/promises';
+
+            class Logger {
+                log(message) { console.log(message); }
+            }
+
+            function a() {
+                const l = new Logger();
+                l.log("hello");
+            }
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("script.js");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(js_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Logger").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "log").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fs/promises").unwrap());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "Logger").unwrap(), "Should find constructor call");
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "log").unwrap(), "Should find method call");
+    }
+
+    #[test]
     fn test_code_aware_evaluator_typescript_suite() {
         let ts_code = r#"
-            // REVIEW: should this be an import?
             import React from 'react';
 
-            export interface User { id: number; }
-            export type ID = string | number;
+            interface User { id: number; }
+            type ID = string | number;
 
             class ApiClient {
                 // The URL for the API
                 private url = "https://api.example.com";
                 fetchUser(): User | null { return null; }
             }
+
+            const client = new ApiClient();
+            client.fetchUser();
         "#;
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -329,19 +388,19 @@ def process_data():
 
         // --- Granular Defs ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Interface, "User").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Type, "ID").unwrap());
-        let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Class, "ApiClient").unwrap());
-
-        // --- Functions ---
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ApiClient").unwrap(), "Should find class");
         let mut ctx = FileContext::new(file_path.clone());
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "fetchUser").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "React").unwrap());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "ApiClient").unwrap(), "Should find TS constructor call");
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "fetchUser").unwrap(), "Should find TS method call");
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "REVIEW").unwrap());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "The URL").unwrap());
         let mut ctx = FileContext::new(file_path.clone());
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "https://api.example.com").unwrap());
     }

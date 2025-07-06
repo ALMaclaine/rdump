@@ -16,6 +16,10 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
         PredicateKey::Import,
         "(import_statement) @match".to_string(),
     );
+   queries.insert(
+       PredicateKey::Call,
+       "[ (call_expression function: [ (identifier) @match (member_expression property: (property_identifier) @match) ]) (new_expression constructor: (identifier) @match) ]".to_string()
+   );
 
    queries.insert(PredicateKey::Comment, "[(comment) @match (regex) @match]".to_string()); // JS Regexes are basically comments
    queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());

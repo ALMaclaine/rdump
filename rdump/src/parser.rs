@@ -31,6 +31,8 @@ pub enum PredicateKey {
     // Syntactic Content
     Comment,
     Str,
+   // Usage
+   Call,
     // A key for testing or unknown predicates
     Other(String),
 }
@@ -49,14 +51,15 @@ impl From<&str> for PredicateKey {
             "def" => Self::Def,
             "func" => Self::Func,
             "import" => Self::Import,
-           "class" => Self::Class,
-           "struct" => Self::Struct,
-           "enum" => Self::Enum,
-           "interface" => Self::Interface,
-           "trait" => Self::Trait,
-           "type" => Self::Type,
-           "comment" => Self::Comment,
-           "str" => Self::Str,
+            "class" => Self::Class,
+            "struct" => Self::Struct,
+            "enum" => Self::Enum,
+            "interface" => Self::Interface,
+            "trait" => Self::Trait,
+            "type" => Self::Type,
+            "comment" => Self::Comment,
+            "str" => Self::Str,
+           "call" => Self::Call,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
@@ -251,6 +254,7 @@ mod tests {
        assert_eq!(parse_query("struct:Bar").unwrap(), *predicate(PredicateKey::Struct, "Bar"));
        assert_eq!(parse_query("comment:TODO").unwrap(), *predicate(PredicateKey::Comment, "TODO"));
        assert_eq!(parse_query("str:'api_key'").unwrap(), *predicate(PredicateKey::Str, "api_key"));
+       assert_eq!(parse_query("call:my_func").unwrap(), *predicate(PredicateKey::Call, "my_func"));
    }
 
    #[test]

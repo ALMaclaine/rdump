@@ -32,8 +32,22 @@ pub(super) fn create_python_profile() -> LanguageProfile {
         .to_string(),
     );
 
-   queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
-   queries.insert(PredicateKey::Str, "(string) @match".to_string());
+   // Query for function and method call sites.
+   queries.insert(
+       PredicateKey::Call,
+       "
+       (call
+           function: [
+               (identifier) @match
+               (attribute attribute: (identifier) @match)
+           ]
+       )
+       "
+       .to_string(),
+   );
+
+    queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
+    queries.insert(PredicateKey::Str, "(string) @match".to_string());
 
     LanguageProfile { language, queries }
 }

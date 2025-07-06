@@ -58,6 +58,32 @@ fn test_import_finds_typescript_import() {
 }
 
 #[test]
+fn test_call_predicate_javascript() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("call:log & ext:js")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("logger.js"))
+        .stdout(predicate::str::contains("logger.log(\"init\");"));
+}
+
+#[test]
+fn test_call_predicate_typescript() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("call:log & ext:ts")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("log_utils.ts"))
+        .stdout(predicate::str::contains("console.log(newLog);"));
+}
+
+#[test]
 fn test_comment_predicate_typescript() {
     let dir = setup_test_project();
     Command::cargo_bin("rdump").unwrap()

@@ -174,3 +174,16 @@ fn test_type_and_struct_predicates_rust() {
         .success()
         .stdout(predicate::str::contains("src/lib.rs"));
 }
+
+#[test]
+fn test_call_predicate_rust() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("call:println & ext:rs")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/main.rs")) // The call is in main.rs
+        .stdout(predicate::str::contains("src/lib.rs").not()); // The definition is in lib.rs
+}

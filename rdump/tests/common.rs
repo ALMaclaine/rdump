@@ -14,13 +14,14 @@ pub fn setup_test_project() -> TempDir {
 
     let main_rs_content = r#"
 // TODO: Refactor this later
-use crate::lib::User;
+use crate::lib::{User, Role};
 
 struct Cli {
     pattern: String,
 }
 
 pub fn main() {
+    let _u = User::new();
     println!("Hello, world!");
 }
 "#;
@@ -64,10 +65,17 @@ import os
 class Helper:
     def __init__(self):
         self.path = "/tmp/data"
+        self.do_setup()
+
+    def do_setup(self):
+        print("Setup complete")
 
 def run_helper():
     h = Helper()
     return h.path
+
+if __name__ == "__main__":
+    run_helper()
 "#;
     let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
     py_file.write_all(py_content.as_bytes()).unwrap();
@@ -80,6 +88,9 @@ import { a } from './lib';
 export class OldLogger {
     log(msg) { console.log("logging: " + msg); }
 }
+
+const logger = new OldLogger();
+logger.log("init");
 "#;
     fs::File::create(src_dir.join("logger.js"))
         .unwrap()
@@ -97,7 +108,9 @@ export interface ILog {
 export type LogLevel = "info" | "warn" | "error";
 
 export function createLog(message: string): ILog {
-    return { message };
+    const newLog = { message };
+    console.log(newLog);
+    return newLog;
 }
 "#;
     fs::File::create(src_dir.join("log_utils.ts"))

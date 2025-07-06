@@ -65,6 +65,7 @@ pub struct SearchArgs {
    ///   def:<str>          - A generic definition (class, struct, enum, etc.)
    ///   func:<str>         - A function or method
    ///   import:<str>       - An import or use statement
+   ///   call:<str>         - A function or method call site
    ///
    /// GRANULAR DEFINITIONS:
    ///   class:<str>        - A class definition
