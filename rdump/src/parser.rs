@@ -167,11 +167,21 @@ fn build_ast_from_logical_op(pair: Pair<Rule>) -> Result<AstNode> {
 }
 
 fn unescape_value(value: &str) -> String {
-    if value.starts_with('"') && value.ends_with('"') {
-        return value[1..value.len() - 1].replace("\\\"", "\"");
-    }
-    if value.starts_with('\'') && value.ends_with('\'') {
-        return value[1..value.len() - 1].replace("\\\'", "'");
+    let quote_char = value.chars().next();
+    if quote_char == Some('"') || quote_char == Some('\'') {
+        let inner = &value[1..value.len() - 1];
+        let mut unescaped = String::with_capacity(inner.len());
+        let mut chars = inner.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(next_c) = chars.next() {
+                    unescaped.push(next_c);
+                }
+            } else {
+                unescaped.push(c);
+            }
+        }
+        return unescaped;
     }
     value.to_string()
 }
@@ -253,7 +263,8 @@ mod tests {
     #[test]
     fn test_unescape_value() {
         assert_eq!(unescape_value(r#""hello \"world\"""#), "hello \"world\"");
-        assert_eq!(unescape_value(r#"'hello \'world''"#), "hello 'world'");
+        assert_eq!(unescape_value(r#"'hello \'world\''"#), "hello 'world'");
+        assert_eq!(unescape_value(r#""a \\ b""#), "a \\ b");
         assert_eq!(unescape_value("no_quotes"), "no_quotes");
     }
 

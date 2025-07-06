@@ -177,7 +177,7 @@ fn get_contextual_line_ranges(
     lines: &[&str],
     context_lines: usize,
 ) -> Vec<StdRange<usize>> {
-    if hunks.is_empty() {
+    if hunks.is_empty() || lines.is_empty() {
         return vec![];
     }
 
@@ -187,7 +187,7 @@ fn get_contextual_line_ranges(
         let end_line = hunk.end_point.row;
 
         let context_start = start_line.saturating_sub(context_lines);
-        let context_end = (end_line + context_lines).min(lines.len().saturating_sub(1));
+        let context_end = (end_line + context_lines).min(lines.len() - 1);
 
         if context_end >= context_start {
             line_ranges.push(context_start..context_end + 1);
