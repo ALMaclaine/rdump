@@ -17,10 +17,283 @@ pest = "2.7.10"
 pest_derive = "2.7.10"
 tempfile = "3.20.0"
 glob = "0.3.1"
+dirs = "5.0.1"
+toml = "0.8.12"
+chrono = { version = "0.4", features = ["serde"] }
 
 
 
 // END rdump/Cargo.toml
+
+// START rdump/src/commands/mod.rs
+
+// This makes the functions inside search.rs and preset.rs available
+// to other parts of the program that use the `commands` module.
+pub mod search;
+pub mod preset;
+
+
+// END rdump/src/commands/mod.rs
+
+// START rdump/src/commands/preset.rs
+
+use anyhow::{anyhow, Result};
+use std::fs;
+use crate::config::{self, Config};
+use crate::PresetAction; // We'll need to make PresetAction public
+
+/// The main entry point for the `preset` command.
+pub fn run_preset(action: PresetAction) -> Result<()> {
+    match action {
+        PresetAction::List => {
+            let config = config::load_config()?;
+            if config.presets.is_empty() {
+                println!("No presets found.");
+            } else {
+                println!("Available presets:");
+                let max_len = config.presets.keys().map(|k| k.len()).max().unwrap_or(0);
+                for (name, query) in config.presets {
+                    println!("  {:<width$} : {}", name, query, width = max_len);
+                }
+            }
+        }
+        PresetAction::Add { name, query } => {
+            let path = config::global_config_path()
+                .ok_or_else(|| anyhow!("Could not determine global config path"))?;
+
+            let mut config = if path.exists() {
+                let config_str = fs::read_to_string(&path)?;
+                toml::from_str(&config_str)?
+            } else {
+                Config::default()
+            };
+
+            println!("Adding/updating preset '{}'...", name);
+            config.presets.insert(name, query);
+            config::save_config(&config)?;
+        }
+        PresetAction::Remove { name } => {
+            let path = config::global_config_path()
+                .ok_or_else(|| anyhow!("Could not determine global config path"))?;
+
+            if !path.exists() {
+                return Err(anyhow!("Global config file does not exist. No presets to remove."));
+            }
+
+            let mut config: Config = toml::from_str(&fs::read_to_string(&path)?)?;
+
+            if config.presets.remove(&name).is_some() {
+                println!("Removing preset '{}'...", name);
+                config::save_config(&config)?;
+            } else {
+                return Err(anyhow!("Preset '{}' not found in global config.", name));
+            }
+        }
+    }
+    Ok(())
+}
+
+
+// END rdump/src/commands/preset.rs
+
+// START rdump/src/commands/search.rs
+
+use anyhow::Result;
+use ignore::overrides::OverrideBuilder;
+use ignore::WalkBuilder;
+use rayon::prelude::*;
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::PathBuf;
+
+use crate::evaluator::Evaluator;
+use crate::formatter;
+use crate::parser;
+use crate::{config, SearchArgs};
+
+/// The main entry point for the `search` command.
+pub fn run_search(mut args: SearchArgs) -> Result<()> {
+    // --- Load Config and Build Query ---
+    let config = config::load_config()?;
+    let mut final_query = args.query.take().unwrap_or_default();
+
+    for preset_name in args.preset.iter().rev() {
+        let preset_query = config.presets.get(preset_name)
+            .ok_or_else(|| anyhow::anyhow!("Preset '{}' not found", preset_name))?;
+
+        if final_query.is_empty() {
+            final_query = format!("({})", preset_query);
+        } else {
+            final_query = format!("({}) & {}", preset_query, final_query);
+        }
+    }
+
+    if final_query.is_empty() {
+        return Err(anyhow::anyhow!("Empty query. Provide a query string or use a preset."));
+    }
+
+    // --- 1. Find candidates ---
+    let candidate_files = get_candidate_files(
+        &args.root,
+        args.no_ignore,
+        args.hidden,
+        args.max_depth,
+    )?;
+
+    // --- 2. Parse query ---
+    let ast = parser::parse_query(&final_query)?;
+
+    // --- 3. Evaluate files ---
+    let evaluator = Evaluator::new(&ast);
+    let mut matching_files: Vec<PathBuf> = candidate_files
+        .par_iter()
+        .filter_map(|path| match evaluator.evaluate(path) {
+            Ok(true) => Some(path.clone()),
+            Ok(false) => None,
+            Err(e) => {
+                eprintln!("Error evaluating file {}: {}", path.display(), e);
+                None
+            }
+        })
+        .collect();
+
+    matching_files.sort();
+
+    // --- 4. Format and print results ---
+    let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
+        Box::new(File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
+    };
+
+    formatter::print_output(
+        &mut writer,
+        &matching_files,
+        &args.format,
+        args.line_numbers,
+    )?;
+
+    Ok(())
+}
+
+/// Walks the directory, respecting .gitignore, and applies our own smart defaults.
+// This is now a private helper function within the search module.
+fn get_candidate_files(
+    root: &PathBuf,
+    no_ignore: bool,
+    hidden: bool,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut override_builder = OverrideBuilder::new(root);
+    if !no_ignore {
+        override_builder.add("!node_modules/")?;
+        override_builder.add("!target/")?;
+        override_builder.add("!.git/")?;
+    }
+    let overrides = override_builder.build()?;
+    let mut walker_builder = WalkBuilder::new(root);
+    walker_builder
+        .overrides(overrides)
+        .ignore(!no_ignore)
+        .hidden(!hidden)
+        .max_depth(max_depth);
+    for result in walker_builder.build() {
+        let entry = result?;
+        if entry.file_type().map_or(false, |ft| ft.is_file()) {
+            files.push(entry.into_path());
+        }
+    }
+    Ok(files)
+}
+
+
+// END rdump/src/commands/search.rs
+
+// START rdump/src/config.rs
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
+// This struct represents the structure of our TOML config file.
+// `#[derive(Deserialize)]` tells serde how to create this struct from TOML text.
+#[derive(Deserialize, Serialize, Debug, Default)]
+pub struct Config {
+    // `#[serde(default)]` ensures that if the `presets` table is missing,
+    // we just get an empty HashMap instead of an error.
+    #[serde(default)]
+    pub presets: HashMap<String, String>,
+}
+
+/// Finds and loads the configuration, merging global and local files.
+pub fn load_config() -> Result<Config> {
+    let mut final_config = Config::default();
+
+    // 1. Load the global config file, if it exists.
+    if let Some(global_config_path) = global_config_path() {
+        if global_config_path.exists() {
+            let global_config_str = fs::read_to_string(&global_config_path)
+                .with_context(|| format!("Failed to read global config at {:?}", global_config_path))?;
+            let global_config: Config = toml::from_str(&global_config_str)?;
+            final_config.presets.extend(global_config.presets);
+        }
+    }
+
+    // 2. Find and load the local config file, if it exists.
+    // Local presets will overwrite global ones with the same name.
+    if let Some(local_config_path) = find_local_config() {
+        if local_config_path.exists() {
+            let local_config_str = fs::read_to_string(&local_config_path)
+                .with_context(|| format!("Failed to read local config at {:?}", local_config_path))?;
+            let local_config: Config = toml::from_str(&local_config_str)?;
+            final_config.presets.extend(local_config.presets);
+        }
+    }
+
+    Ok(final_config)
+}
+
+/// Returns the path to the global configuration file.
+pub fn global_config_path() -> Option<PathBuf> {
+    // Use the `dirs` crate to find the conventional config directory.
+    dirs::config_dir().map(|p| p.join("rdump/config.toml"))
+}
+
+/// Searches for a local `.rdump.toml` in the current directory and its parents.
+fn find_local_config() -> Option<PathBuf> {
+    let current_dir = std::env::current_dir().ok()?;
+    for ancestor in current_dir.ancestors() {
+        let config_path = ancestor.join(".rdump.toml");
+        if config_path.exists() {
+            return Some(config_path);
+        }
+    }
+    None
+}
+
+/// Saves the given config to the global configuration file.
+pub fn save_config(config: &Config) -> Result<()> {
+    let path = global_config_path().ok_or_else(|| anyhow::anyhow!("Could not determine global config path"))?;
+
+    // Ensure the parent directory exists.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory at {:?}", parent))?;
+    }
+
+    let toml_string = toml::to_string_pretty(config)?;
+    fs::write(&path, toml_string)
+        .with_context(|| format!("Failed to write global config to {:?}", path))?;
+
+    println!("Successfully saved config to {:?}", path);
+    Ok(())
+}
+
+
+// END rdump/src/config.rs
 
 // START rdump/src/evaluator.rs
 
@@ -392,7 +665,10 @@ mod tests {
 
 // START rdump/src/formatter.rs
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Local}; // For formatting timestamps
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt; // For Unix permissions
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -415,6 +691,33 @@ pub fn print_output(
     with_line_numbers: bool,
 ) -> Result<()> {
     match format {
+        Format::Find => {
+            for path in matching_files {
+                let metadata = fs::metadata(path)?;
+                let size = metadata.len();
+                let modified: DateTime<Local> = DateTime::from(metadata.modified()?);
+
+                // Get permissions (basic implementation)
+                let perms = metadata.permissions();
+                let mode = perms.mode();
+                let perms_str = format_mode(mode);
+
+                // Format size into human-readable string
+                let size_str = format_size(size);
+
+                // Format time
+                let time_str = modified.format("%b %d %H:%M").to_string();
+
+                writeln!(
+                    writer,
+                    "{:<12} {:>8} {} {}",
+                    perms_str,
+                    size_str,
+                    time_str,
+                    path.display()
+                )?;
+            }
+        }
         Format::Paths => {
             for path in matching_files {
                 writeln!(writer, "{}", path.display())?;
@@ -467,6 +770,43 @@ pub fn print_output(
         }
     }
     Ok(())
+}
+
+fn format_mode(mode: u32) -> String {
+    #[cfg(unix)]
+    {
+        let user_r = if mode & 0o400 != 0 { 'r' } else { '-' };
+        let user_w = if mode & 0o200 != 0 { 'w' } else { '-' };
+        let user_x = if mode & 0o100 != 0 { 'x' } else { '-' };
+        let group_r = if mode & 0o040 != 0 { 'r' } else { '-' };
+        let group_w = if mode & 0o020 != 0 { 'w' } else { '-' };
+        let group_x = if mode & 0o010 != 0 { 'x' } else { '-' };
+        let other_r = if mode & 0o004 != 0 { 'r' } else { '-' };
+        let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
+        let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
+        format!("-{}{}{}{}{}{}{}{}{}", user_r, user_w, user_x, group_r, group_w, group_x, other_r, other_w, other_x)
+    }
+    #[cfg(not(unix))]
+    {
+        // Basic fallback for non-Unix platforms
+        if mode & 0o200 != 0 { "-rw-------" } else { "-r--------" }.to_string()
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1}G", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}M", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1}K", bytes as f64 / KB as f64)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 
@@ -534,6 +874,22 @@ mod tests {
         assert_eq!(output_data[1].path, file2.path().to_string_lossy());
         assert_eq!(output_data[1].content, "some text");
     }
+
+    #[test]
+    fn test_format_find() {
+        let file = create_temp_file_with_content("hello"); // 5 bytes
+        let paths = vec![file.path().to_path_buf()];
+        let mut writer = Vec::new();
+
+        print_output(&mut writer, &paths, &Format::Find, false).unwrap();
+
+        let output = String::from_utf8(writer).unwrap();
+
+        // We can't test the exact permissions or timestamp, but we can test the structure.
+        assert!(output.contains("5B")); // Check for size
+        assert!(output.contains(file.path().to_str().unwrap())); // Check for path
+        assert!(output.ends_with('\n'));
+    }
 }
 
 
@@ -541,165 +897,119 @@ mod tests {
 
 // START rdump/src/main.rs
 
+// Declare all our modules
+mod commands;
+mod config;
 mod evaluator;
 mod formatter;
 mod parser;
 
-use std::fs::File;
-use std::io::{self, Write};
-
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
-use evaluator::Evaluator;
-use ignore::overrides::OverrideBuilder;
-use ignore::WalkBuilder;
-use rayon::prelude::*;
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+// Bring our command functions into scope
+use commands::{preset::run_preset, search::run_search};
 
+// These structs and enums define the public API of our CLI.
+// They need to be public so the `commands` modules can use them.
+#[derive(Parser, Debug)]
+#[command(version, about = "A fast, expressive tool to find and dump file contents.")]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
 
-// NEW: An enum to represent our output formats for clap
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Search for files using a query (default command).
+    #[command(visible_alias = "s")]
+    Search(SearchArgs),
+    /// Manage saved presets.
+    #[command(visible_alias = "p")]
+    Preset(PresetArgs),
+}
+
+#[derive(Parser, Debug, Clone)]
+pub struct SearchArgs {
+    #[arg()]
+    pub query: Option<String>,
+    #[arg(long, short)]
+    pub preset: Vec<String>,
+    #[arg(short, long, default_value = ".")]
+    pub root: PathBuf,
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    #[arg(short, long)]
+    pub line_numbers: bool,
+    #[arg(long)]
+    pub no_headers: bool,
+    #[arg(long, value_enum, default_value_t = Format::Markdown)]
+    pub format: Format,
+    #[arg(long)]
+    pub no_ignore: bool,
+    #[arg(long)]
+    pub hidden: bool,
+    #[arg(long)]
+    pub max_depth: Option<usize>,
+
+    /// List files with metadata instead of dumping content.
+    #[arg(long)]
+    pub find: bool, // <-- NEW
+}
+
+#[derive(Parser, Debug)]
+pub struct PresetArgs {
+    #[command(subcommand)]
+    pub action: PresetAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PresetAction {
+    /// List all available presets.
+    List,
+    /// Add or update a preset in the global config file.
+    Add {
+        #[arg(required = true)]
+        name: String,
+        #[arg(required = true)]
+        query: String,
+    },
+    /// Remove a preset from the global config file.
+    Remove {
+        #[arg(required = true)]
+        name: String,
+    },
+}
+
 #[derive(Debug, Clone, ValueEnum)]
-enum Format {
+pub enum Format {
     Markdown,
     Json,
     Paths,
     Cat,
+    Find, // <-- NEW
 }
 
-/// A fast, expressive tool to find and dump file contents for LLM context using a query language.
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    /// The query string to search for files.
-    #[arg(required = true)]
-    query: String,
-
-    /// The root directory to start the search from.
-    #[arg(short, long, default_value = ".")]
-    root: PathBuf,
-
-    /// Output file path. If not provided, output is written to stdout.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// Add line numbers to the output.
-    #[arg(short, long)]
-    line_numbers: bool,
-
-    /// A shorthand for '--format cat'.
-    #[arg(long)]
-    no_headers: bool,
-
-    /// The output format for the results.
-    #[arg(long, value_enum, default_value_t = Format::Markdown)]
-    format: Format,
-
-    // --- NEW FLAGS ---
-    /// Do not respect .gitignore and other ignore files.
-    #[arg(long)]
-    no_ignore: bool,
-
-    /// Search hidden files and directories.
-    #[arg(long)]
-    hidden: bool,
-
-    /// Set the maximum search depth.
-    #[arg(long)]
-    max_depth: Option<usize>,
-}
-
-
-
+/// The main entry point.
+/// Its only job is to parse the CLI and delegate to the correct command module.
 fn main() -> Result<()> {
     let mut cli = Cli::parse();
 
-    // --- Handle `--no-headers` shorthand ---
-    if cli.no_headers {
-        cli.format = Format::Cat;
-    }
-
-    // --- 1. Find candidates ---
-    // MODIFIED: Pass the new flags to the function.
-    let candidate_files = get_candidate_files(
-        &cli.root,
-        cli.no_ignore,
-        cli.hidden,
-        cli.max_depth,
-    )?;
-
-    // --- 2. Parse query ---
-    let ast = parser::parse_query(&cli.query)?;
-
-    // --- 3. Evaluate files ---
-    let evaluator = Evaluator::new(&ast);
-    let mut matching_files: Vec<PathBuf> = candidate_files
-        .par_iter()
-        .filter_map(|path| match evaluator.evaluate(path) {
-            Ok(true) => Some(path.clone()),
-            Ok(false) => None,
-            Err(e) => {
-                eprintln!("Error evaluating file {}: {}", path.display(), e);
-                None
+    match &mut cli.command {
+        Commands::Search(args) => {
+            // --- Handle Shorthand Flags ---
+            if args.no_headers {
+                args.format = Format::Cat;
             }
-        })
-        .collect();
-
-    matching_files.sort();
-
-    // --- 4. Format and print results ---
-    // This `Box<dyn Write>` lets us decide at runtime whether to write
-    // to stdout or a file, without changing the formatter's code.
-    let mut writer: Box<dyn Write> = if let Some(output_path) = &cli.output {
-        Box::new(File::create(output_path)?)
-    } else {
-        Box::new(io::stdout())
-    };
-
-    formatter::print_output(
-        &mut writer,
-        &matching_files,
-        &cli.format,
-        cli.line_numbers,
-    )?;
-
-    Ok(())
-}
-
-/// Walks the directory, respecting .gitignore, and applies our own smart defaults to return a list of files.
-// MODIFIED: The function now takes the flags it needs from the Cli struct.
-fn get_candidate_files(
-    root: &PathBuf,
-    no_ignore: bool,
-    hidden: bool,
-    max_depth: Option<usize>,
-) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-
-    let mut override_builder = OverrideBuilder::new(root);
-    // Only apply our smart defaults if ignore files are being used.
-    if !no_ignore {
-        override_builder.add("!node_modules/")?;
-        override_builder.add("!target/")?;
-        override_builder.add("!.git/")?;
-    }
-    let overrides = override_builder.build()?;
-
-    // --- MODIFIED: Configure WalkBuilder with our new flags ---
-    let mut walker_builder = WalkBuilder::new(root);
-    walker_builder
-        .overrides(overrides)
-        .ignore(!no_ignore) // The .ignore(bool) method defaults to true. We pass the opposite of our flag.
-        .hidden(!hidden)    // The .hidden(bool) method defaults to true (hides files). We pass the opposite.
-        .max_depth(max_depth);
-
-    for result in walker_builder.build() {
-        let entry = result?;
-        if entry.file_type().map_or(false, |ft| ft.is_file()) {
-            files.push(entry.into_path());
+            // NEW: Handle `--find` shorthand
+            if args.find {
+                args.format = Format::Find;
+            }
+            run_search(args.clone())
         }
+        Commands::Preset(args) => run_preset(args.action.clone()),
     }
-    Ok(files)
 }
 
 

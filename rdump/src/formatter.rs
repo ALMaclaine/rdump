@@ -1,4 +1,7 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Local}; // For formatting timestamps
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt; // For Unix permissions
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -21,6 +24,33 @@ pub fn print_output(
     with_line_numbers: bool,
 ) -> Result<()> {
     match format {
+        Format::Find => {
+            for path in matching_files {
+                let metadata = fs::metadata(path)?;
+                let size = metadata.len();
+                let modified: DateTime<Local> = DateTime::from(metadata.modified()?);
+
+                // Get permissions (basic implementation)
+                let perms = metadata.permissions();
+                let mode = perms.mode();
+                let perms_str = format_mode(mode);
+
+                // Format size into human-readable string
+                let size_str = format_size(size);
+
+                // Format time
+                let time_str = modified.format("%b %d %H:%M").to_string();
+
+                writeln!(
+                    writer,
+                    "{:<12} {:>8} {} {}",
+                    perms_str,
+                    size_str,
+                    time_str,
+                    path.display()
+                )?;
+            }
+        }
         Format::Paths => {
             for path in matching_files {
                 writeln!(writer, "{}", path.display())?;
@@ -73,6 +103,43 @@ pub fn print_output(
         }
     }
     Ok(())
+}
+
+fn format_mode(mode: u32) -> String {
+    #[cfg(unix)]
+    {
+        let user_r = if mode & 0o400 != 0 { 'r' } else { '-' };
+        let user_w = if mode & 0o200 != 0 { 'w' } else { '-' };
+        let user_x = if mode & 0o100 != 0 { 'x' } else { '-' };
+        let group_r = if mode & 0o040 != 0 { 'r' } else { '-' };
+        let group_w = if mode & 0o020 != 0 { 'w' } else { '-' };
+        let group_x = if mode & 0o010 != 0 { 'x' } else { '-' };
+        let other_r = if mode & 0o004 != 0 { 'r' } else { '-' };
+        let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
+        let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
+        format!("-{}{}{}{}{}{}{}{}{}", user_r, user_w, user_x, group_r, group_w, group_x, other_r, other_w, other_x)
+    }
+    #[cfg(not(unix))]
+    {
+        // Basic fallback for non-Unix platforms
+        if mode & 0o200 != 0 { "-rw-------" } else { "-r--------" }.to_string()
+    }
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.1}G", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1}M", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1}K", bytes as f64 / KB as f64)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 
@@ -139,5 +206,21 @@ mod tests {
         assert_eq!(output_data[0].content, "{\"key\": \"value\"}");
         assert_eq!(output_data[1].path, file2.path().to_string_lossy());
         assert_eq!(output_data[1].content, "some text");
+    }
+
+    #[test]
+    fn test_format_find() {
+        let file = create_temp_file_with_content("hello"); // 5 bytes
+        let paths = vec![file.path().to_path_buf()];
+        let mut writer = Vec::new();
+
+        print_output(&mut writer, &paths, &Format::Find, false).unwrap();
+
+        let output = String::from_utf8(writer).unwrap();
+
+        // We can't test the exact permissions or timestamp, but we can test the structure.
+        assert!(output.contains("5B")); // Check for size
+        assert!(output.contains(file.path().to_str().unwrap())); // Check for path
+        assert!(output.ends_with('\n'));
     }
 }

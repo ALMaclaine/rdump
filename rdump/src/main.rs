@@ -31,7 +31,7 @@ pub enum Commands {
     Preset(PresetArgs),
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct SearchArgs {
     #[arg()]
     pub query: Option<String>,
@@ -53,6 +53,10 @@ pub struct SearchArgs {
     pub hidden: bool,
     #[arg(long)]
     pub max_depth: Option<usize>,
+
+    /// List files with metadata instead of dumping content.
+    #[arg(long)]
+    pub find: bool, // <-- NEW
 }
 
 #[derive(Parser, Debug)]
@@ -61,7 +65,7 @@ pub struct PresetArgs {
     pub action: PresetAction,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum PresetAction {
     /// List all available presets.
     List,
@@ -85,15 +89,26 @@ pub enum Format {
     Json,
     Paths,
     Cat,
+    Find, // <-- NEW
 }
 
 /// The main entry point.
 /// Its only job is to parse the CLI and delegate to the correct command module.
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
-    match cli.command {
-        Commands::Search(args) => run_search(args),
-        Commands::Preset(args) => run_preset(args.action),
+    match &mut cli.command {
+        Commands::Search(args) => {
+            // --- Handle Shorthand Flags ---
+            if args.no_headers {
+                args.format = Format::Cat;
+            }
+            // NEW: Handle `--find` shorthand
+            if args.find {
+                args.format = Format::Find;
+            }
+            run_search(args.clone())
+        }
+        Commands::Preset(args) => run_preset(args.action.clone()),
     }
 }

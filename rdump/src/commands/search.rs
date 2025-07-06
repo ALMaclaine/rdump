@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use crate::evaluator::Evaluator;
 use crate::formatter;
 use crate::parser;
-use crate::{config, SearchArgs}; // We'll need to make SearchArgs public
+use crate::{config, SearchArgs};
 
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
@@ -30,11 +30,6 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     if final_query.is_empty() {
         return Err(anyhow::anyhow!("Empty query. Provide a query string or use a preset."));
-    }
-
-    // --- Handle `--no-headers` shorthand ---
-    if args.no_headers {
-        args.format = crate::Format::Cat;
     }
 
     // --- 1. Find candidates ---
