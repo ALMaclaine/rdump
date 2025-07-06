@@ -13,6 +13,7 @@ use tree_sitter::Range;
 use crate::evaluator::{Evaluator, FileContext, MatchResult};
 use crate::formatter;
 use crate::parser;
+use crate::predicates;
 
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
@@ -39,12 +40,32 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         ));
     }
 
-    // --- 1. Find candidates ---
+    // --- 1. Find initial candidates ---
     let candidate_files =
         get_candidate_files(&args.root, args.no_ignore, args.hidden, args.max_depth)?;
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
+
+    // --- 3. Pre-filtering Pass (Metadata) ---
+    // This pass uses a special evaluator with only fast metadata predicates.
+    // It quickly reduces the number of files needing full evaluation.
+    let metadata_registry = predicates::create_metadata_predicate_registry();
+    let pre_filter_evaluator = Evaluator::new(ast.clone(), metadata_registry);
+
+    let pre_filtered_files: Vec<PathBuf> = candidate_files
+        .into_iter() // This pass is not parallel, it's fast enough.
+        .filter(|path| {
+            let mut context = FileContext::new(path.clone());
+            match pre_filter_evaluator.evaluate(&mut context) {
+                Ok(result) => result.is_match(),
+                Err(e) => {
+                    eprintln!("Error during pre-filter on {}: {}", path.display(), e);
+                    false
+                }
+            }
+        })
+        .collect();
 
     // --- Determine if color should be used ---
     let use_color = match args.color {
@@ -53,18 +74,17 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         ColorChoice::Auto => atty::is(Stream::Stdout),
     };
 
-    // --- 3. Evaluate files ---
-    let evaluator = Evaluator::new(ast);
-    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = candidate_files
+    // --- 4. Main Evaluation Pass (Content + Semantic) ---
+    // This pass uses the full evaluator on the smaller, pre-filtered set of files.
+    let full_registry = predicates::create_predicate_registry();
+    let evaluator = Evaluator::new(ast, full_registry);
+
+    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = pre_filtered_files
         .par_iter()
         .filter_map(|path| {
             let mut context = FileContext::new(path.clone());
             match evaluator.evaluate(&mut context) {
-                Ok(MatchResult::Boolean(true)) => {
-                    // For boolean matches, we don't have specific hunks, so we pass an empty Vec.
-                    // The formatter will treat this as "the whole file".
-                    Some((path.clone(), Vec::new()))
-                }
+                Ok(MatchResult::Boolean(true)) => Some((path.clone(), Vec::new())),
                 Ok(MatchResult::Boolean(false)) => None,
                 Ok(MatchResult::Hunks(hunks)) => {
                     if hunks.is_empty() {
@@ -83,7 +103,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     matching_files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // --- 4. Format and print results ---
+    // --- 5. Format and print results ---
     let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
         Box::new(File::create(output_path)?)
     } else {
@@ -115,7 +135,6 @@ fn get_candidate_files(
 
     if !no_ignore {
         // Layer 1: Our "sane defaults". These have the lowest precedence.
-        // A user can override these with `!` in their own ignore files.
         let default_ignores = "
            # Default rdump ignores
            node_modules/
@@ -142,10 +161,9 @@ fn get_candidate_files(
         }
 
         // Layer 3: A user's custom project-local .rdumpignore file.
-        // This has high precedence.
         walker_builder.add_custom_ignore_filename(".rdumpignore");
 
-        // Layer 4: Standard .gitignore files, which have the highest project-specific precedence.
+        // Layer 4: Standard .gitignore files.
         walker_builder.git_global(true);
         walker_builder.git_ignore(true);
     } else {
@@ -162,18 +180,13 @@ fn get_candidate_files(
     Ok(files)
 }
 
-// Add to the bottom of rdump/src/commands/search.rs
-
 #[cfg(test)]
 mod tests {
-    // ... (existing tests are unchanged)
-    // ...
     use super::*;
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
 
-    // Helper to run get_candidate_files and return a sorted list of file names
     fn get_sorted_file_names(
         root: &PathBuf,
         no_ignore: bool,
@@ -193,11 +206,6 @@ mod tests {
             .collect()
     }
 
-    // ... (existing test functions)
-
-    // ... (existing tests are unchanged)
-    // ...
-    // ... existing tests ...
     #[test]
     fn test_custom_rdumpignore_file() {
         let dir = tempdir().unwrap();
@@ -213,21 +221,17 @@ mod tests {
 
     #[test]
     fn test_unignore_via_rdumpignore() {
-        // This test verifies that a user can override our "sane defaults".
         let dir = tempdir().unwrap();
         let root = dir.path();
 
-        // Create a node_modules dir, which is ignored by default.
         let node_modules = root.join("node_modules");
         fs::create_dir(&node_modules).unwrap();
         fs::File::create(node_modules.join("some_dep.js")).unwrap();
         fs::File::create(root.join("app.js")).unwrap();
 
-        // Create an ignore file that explicitly re-includes node_modules.
         let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
         writeln!(ignore_file, "!node_modules/").unwrap();
 
-        // Run the search. Both files should now be found.
         let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
         assert_eq!(files.len(), 2);
         assert!(files.contains(&"app.js".to_string()));

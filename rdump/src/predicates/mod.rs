@@ -1,4 +1,3 @@
-
 pub mod code_aware;
 pub mod contains;
 pub mod ext;
@@ -28,22 +27,31 @@ pub trait PredicateEvaluator {
     fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<MatchResult>;
 }
 
-/// Creates and populates the predicate registry.
-pub fn create_predicate_registry(
-) -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+/// Creates a predicate registry with only the fast, metadata-based predicates.
+/// This is used for the pre-filtering pass.
+pub fn create_metadata_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
     let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> =
         HashMap::new();
 
     registry.insert(PredicateKey::Ext, Box::new(ExtEvaluator));
     registry.insert(PredicateKey::Name, Box::new(NameEvaluator));
     registry.insert(PredicateKey::Path, Box::new(PathEvaluator));
-    registry.insert(PredicateKey::Contains, Box::new(ContainsEvaluator));
-    registry.insert(PredicateKey::Matches, Box::new(MatchesEvaluator));
     registry.insert(PredicateKey::Size, Box::new(SizeEvaluator));
     registry.insert(PredicateKey::Modified, Box::new(ModifiedEvaluator));
 
+    registry
+}
+
+/// Creates and populates the complete predicate registry.
+pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+    // Start with the metadata predicates
+    let mut registry = create_metadata_predicate_registry();
+
+    // Add content-based predicates
+    registry.insert(PredicateKey::Contains, Box::new(ContainsEvaluator));
+    registry.insert(PredicateKey::Matches, Box::new(MatchesEvaluator));
+
     // Register the single CodeAwareEvaluator for all semantic predicate keys.
-    // It's a stateless struct, so cloning the Box is cheap (it's just a pointer clone).
     let code_evaluator = Box::new(CodeAwareEvaluator);
     registry.insert(PredicateKey::Def, code_evaluator.clone());
     registry.insert(PredicateKey::Func, code_evaluator.clone());
@@ -56,7 +64,7 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Type, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
     registry.insert(PredicateKey::Str, code_evaluator.clone());
-   registry.insert(PredicateKey::Call, code_evaluator);
+    registry.insert(PredicateKey::Call, code_evaluator);
 
     registry
 }
@@ -65,10 +73,9 @@ pub fn create_predicate_registry(
 mod tests {
     use super::*;
     use std::io::Write;
-    
 
-   // The `code_aware` suite remains here as it tests the interaction
-   // of multiple profiles, which is a responsibility of this parent module.
+    // The `code_aware` suite remains here as it tests the interaction
+    // of multiple profiles, which is a responsibility of this parent module.
     #[test]
     fn test_code_aware_evaluator_full_rust_suite() {
         let rust_code = r#"
@@ -96,29 +103,62 @@ mod tests {
 
         // --- Granular Defs ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Struct, "AppConfig").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Struct, "AppConfig")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Trait, "Runnable").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Trait, "Runnable")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Type, "ConfigMap").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Type, "ConfigMap")
+            .unwrap()
+            .is_match());
 
         // --- Functions ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "run").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "run")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "launch_app").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "launch_app")
+            .unwrap()
+            .is_match());
 
-       // --- Calls ---
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "println").unwrap().is_match(), "Should find function call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Call, "launch_app").unwrap().is_match(), "Should not find the definition as a call");
+        // --- Calls ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "println")
+                .unwrap()
+                .is_match(),
+            "Should find function call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            !evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "launch_app")
+                .unwrap()
+                .is_match(),
+            "Should not find the definition as a call"
+        );
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "TODO").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "TODO")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "Launching...").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "Launching...")
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -149,27 +189,60 @@ def process_data():
 
         // --- Granular Defs ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Class, "DataProcessor").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Class, "DataProcessor")
+            .unwrap()
+            .is_match());
 
         // --- Functions ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "process_data")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "connect").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "connect")
+            .unwrap()
+            .is_match());
 
-       // --- Calls ---
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "print").unwrap().is_match(), "Should find multiple calls to print");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "DataProcessor").unwrap().is_match(), "Should find constructor call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "connect").unwrap().is_match(), "Should find method call");
+        // --- Calls ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "print")
+                .unwrap()
+                .is_match(),
+            "Should find multiple calls to print"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "DataProcessor")
+                .unwrap()
+                .is_match(),
+            "Should find constructor call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "connect")
+                .unwrap()
+                .is_match(),
+            "Should find method call"
+        );
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "FIXME").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "FIXME")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "secret_key").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "secret_key")
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -195,15 +268,36 @@ def process_data():
         let evaluator = CodeAwareEvaluator;
 
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Logger").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Def, "Logger")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "log").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "log")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fs/promises").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "Logger").unwrap().is_match(), "Should find constructor call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "log").unwrap().is_match(), "Should find method call");
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "fs/promises")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "Logger")
+                .unwrap()
+                .is_match(),
+            "Should find constructor call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "log")
+                .unwrap()
+                .is_match(),
+            "Should find method call"
+        );
     }
 
     #[test]
@@ -233,26 +327,56 @@ def process_data():
 
         // --- Granular Defs ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ApiClient").unwrap().is_match(), "Should find class");
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Def, "ApiClient")
+                .unwrap()
+                .is_match(),
+            "Should find class"
+        );
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "fetchUser").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "fetchUser")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "React").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "ApiClient").unwrap().is_match(), "Should find TS constructor call");
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "fetchUser").unwrap().is_match(), "Should find TS method call");
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "React")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "ApiClient")
+                .unwrap()
+                .is_match(),
+            "Should find TS constructor call"
+        );
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(
+            evaluator
+                .evaluate(&mut ctx, &PredicateKey::Call, "fetchUser")
+                .unwrap()
+                .is_match(),
+            "Should find TS method call"
+        );
 
         // --- Syntactic Content ---
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "The URL").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "The URL")
+            .unwrap()
+            .is_match());
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "https://api.example.com").unwrap().is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "https://api.example.com")
+            .unwrap()
+            .is_match());
     }
 
-   #[test]
-   fn test_code_aware_evaluator_go_suite() {
-       let go_code = r#"
+    #[test]
+    fn test_code_aware_evaluator_go_suite() {
+        let go_code = r#"
            package main
 
            import "fmt"
@@ -272,28 +396,43 @@ def process_data():
            }
        "#;
 
-       let temp_dir = tempfile::tempdir().unwrap();
-       let file_path = temp_dir.path().join("main.go");
-       let mut file = std::fs::File::create(&file_path).unwrap();
-       file.write_all(go_code.as_bytes()).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("main.go");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(go_code.as_bytes()).unwrap();
 
-       let evaluator = CodeAwareEvaluator;
+        let evaluator = CodeAwareEvaluator;
 
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Struct, "User").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "Greet").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "Println").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fmt").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "represents a user").unwrap().is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Struct, "User")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "Greet")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Call, "Println")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "fmt")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "represents a user")
+            .unwrap()
+            .is_match());
     }
 
-   #[test]
-   fn test_code_aware_evaluator_java_suite() {
-       let java_code = r#"
+    #[test]
+    fn test_code_aware_evaluator_java_suite() {
+        let java_code = r#"
            package com.example;
 
            import java.util.List;
@@ -308,24 +447,42 @@ def process_data():
            }
        "#;
 
-       let temp_dir = tempfile::tempdir().unwrap();
-       let file_path = temp_dir.path().join("User.java");
-       let mut file = std::fs::File::create(&file_path).unwrap();
-       file.write_all(java_code.as_bytes()).unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("User.java");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(java_code.as_bytes()).unwrap();
 
-       let evaluator = CodeAwareEvaluator;
+        let evaluator = CodeAwareEvaluator;
 
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Class, "User").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "greet").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "println").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "java.util.List").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "Represents a user").unwrap().is_match());
-       let mut ctx = FileContext::new(file_path.clone());
-       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "User created").unwrap().is_match());
-   }
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Class, "User")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Func, "greet")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Call, "println")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Import, "java.util.List")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Comment, "Represents a user")
+            .unwrap()
+            .is_match());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator
+            .evaluate(&mut ctx, &PredicateKey::Str, "User created")
+            .unwrap()
+            .is_match());
+    }
 }

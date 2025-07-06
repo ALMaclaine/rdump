@@ -15,12 +15,12 @@ serde = { version = "1.0.203", features = ["derive"] }
 serde_json = "1.0.117"
 pest = "2.7.10"
 pest_derive = "2.7.10"
-tempfile = "3.20.0"
+tempfile = "3.10.1" # Version from dev-dependencies was newer, consolidated here.
 glob = "0.3.1"
 dirs = "5.0.1"
 toml = "0.8.12"
 chrono = { version = "0.4", features = ["serde"] }
-lazy_static = "1.4.0"
+once_cell = "1.19.0" # Replaced lazy_static
 tree-sitter = "0.22.6"
 tree-sitter-rust = "0.21.0"
 tree-sitter-python = "0.21.0"
@@ -35,6 +35,7 @@ atty = "0.2.14"
 assert_cmd = "2.0.14"
 predicates = "3.1.0"
 tempfile = "3.10.1"
+
 
 // END rdump/Cargo.toml
 
@@ -214,36 +215,36 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
 
-   // --- Determine if color should be used ---
-   let use_color = match args.color {
-       ColorChoice::Always => true,
-       ColorChoice::Never => false,
-       ColorChoice::Auto => atty::is(Stream::Stdout),
-   };
+    // --- Determine if color should be used ---
+    let use_color = match args.color {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => atty::is(Stream::Stdout),
+    };
 
     // --- 3. Evaluate files ---
     let evaluator = Evaluator::new(ast);
-   let mut matching_files: Vec<(PathBuf, Vec<Range>)> = candidate_files
+    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = candidate_files
         .par_iter()
         .filter_map(|path| {
             let mut context = FileContext::new(path.clone());
             match evaluator.evaluate(&mut context) {
-               Ok(MatchResult::Boolean(true)) => {
-                   // For boolean matches, we don't have specific hunks, so we pass an empty Vec.
-                   // The formatter will treat this as "the whole file".
-                   Some((path.clone(), Vec::new()))
-               }
-               Ok(MatchResult::Boolean(false)) => None,
-               Ok(MatchResult::Hunks(hunks)) => {
-                   if hunks.is_empty() {
-                       None
-                   } else {
-                       Some((path.clone(), hunks))
-                   }
-               }
+                Ok(MatchResult::Boolean(true)) => {
+                    // For boolean matches, we don't have specific hunks, so we pass an empty Vec.
+                    // The formatter will treat this as "the whole file".
+                    Some((path.clone(), Vec::new()))
+                }
+                Ok(MatchResult::Boolean(false)) => None,
+                Ok(MatchResult::Hunks(hunks)) => {
+                    if hunks.is_empty() {
+                        None
+                    } else {
+                        Some((path.clone(), hunks))
+                    }
+                }
                 Err(e) => {
                     eprintln!("Error evaluating file {}: {}", path.display(), e);
-                   None
+                    None
                 }
             }
         })
@@ -263,7 +264,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &matching_files,
         &args.format,
         args.line_numbers,
-       use_color,
+        use_color,
     )?;
 
     Ok(())
@@ -282,9 +283,9 @@ fn get_candidate_files(
     walker_builder.hidden(!hidden).max_depth(max_depth);
 
     if !no_ignore {
-       // Layer 1: Our "sane defaults". These have the lowest precedence.
-       // A user can override these with `!` in their own ignore files.
-       let default_ignores = "
+        // Layer 1: Our "sane defaults". These have the lowest precedence.
+        // A user can override these with `!` in their own ignore files.
+        let default_ignores = "
            # Default rdump ignores
            node_modules/
            target/
@@ -296,24 +297,24 @@ fn get_candidate_files(
            *.pyc
            __pycache__/
        ";
-       let mut temp_ignore = NamedTempFile::new()?;
-       write!(temp_ignore, "{}", default_ignores)?;
-       walker_builder.add_ignore(temp_ignore.path());
+        let mut temp_ignore = NamedTempFile::new()?;
+        write!(temp_ignore, "{}", default_ignores)?;
+        walker_builder.add_ignore(temp_ignore.path());
 
-       // Layer 2: A user's custom global ignore file.
-       if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
-           if global_ignore_path.exists() {
-               if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
-                   eprintln!("Warning: could not add global ignore file: {}", err);
-               }
-           }
-       }
+        // Layer 2: A user's custom global ignore file.
+        if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
+            if global_ignore_path.exists() {
+                if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
+                    eprintln!("Warning: could not add global ignore file: {}", err);
+                }
+            }
+        }
 
-       // Layer 3: A user's custom project-local .rdumpignore file.
-       // This has high precedence.
+        // Layer 3: A user's custom project-local .rdumpignore file.
+        // This has high precedence.
         walker_builder.add_custom_ignore_filename(".rdumpignore");
 
-       // Layer 4: Standard .gitignore files, which have the highest project-specific precedence.
+        // Layer 4: Standard .gitignore files, which have the highest project-specific precedence.
         walker_builder.git_global(true);
         walker_builder.git_ignore(true);
     } else {
@@ -334,15 +335,12 @@ fn get_candidate_files(
 
 #[cfg(test)]
 mod tests {
-// ... (existing tests are unchanged)
-// ...
+    // ... (existing tests are unchanged)
+    // ...
     use super::*;
-    
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
-
-    
 
     // Helper to run get_candidate_files and return a sorted list of file names
     fn get_sorted_file_names(
@@ -364,46 +362,50 @@ mod tests {
             .collect()
     }
 
-// ... (existing test functions)
+    // ... (existing test functions)
 
     // ... (existing tests are unchanged)
-// ...
-// ... existing tests ...
+    // ...
+    // ... existing tests ...
     #[test]
     fn test_custom_rdumpignore_file() {
-       let dir = tempdir().unwrap();
-       let root = dir.path();
-       let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
-       writeln!(ignore_file, "*.log").unwrap();
-       fs::File::create(root.join("app.js")).unwrap();
-       fs::File::create(root.join("app.log")).unwrap();
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "*.log").unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
+        fs::File::create(root.join("app.log")).unwrap();
 
         let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
         assert_eq!(files, vec!["app.js"]);
     }
 
-   #[test]
-   fn test_unignore_via_rdumpignore() {
-       // This test verifies that a user can override our "sane defaults".
-       let dir = tempdir().unwrap();
-       let root = dir.path();
+    #[test]
+    fn test_unignore_via_rdumpignore() {
+        // This test verifies that a user can override our "sane defaults".
+        let dir = tempdir().unwrap();
+        let root = dir.path();
 
-       // Create a node_modules dir, which is ignored by default.
-       let node_modules = root.join("node_modules");
-       fs::create_dir(&node_modules).unwrap();
-       fs::File::create(node_modules.join("some_dep.js")).unwrap();
-       fs::File::create(root.join("app.js")).unwrap();
+        // Create a node_modules dir, which is ignored by default.
+        let node_modules = root.join("node_modules");
+        fs::create_dir(&node_modules).unwrap();
+        fs::File::create(node_modules.join("some_dep.js")).unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
 
-       // Create an ignore file that explicitly re-includes node_modules.
-       let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
-       writeln!(ignore_file, "!node_modules/").unwrap();
+        // Create an ignore file that explicitly re-includes node_modules.
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "!node_modules/").unwrap();
 
-       // Run the search. Both files should now be found.
-       let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
-       assert_eq!(files.len(), 2);
-       assert!(files.contains(&"app.js".to_string()));
-       assert!(files.contains(&"node_modules/some_dep.js".to_string().replace('/', &std::path::MAIN_SEPARATOR.to_string())));
-   }
+        // Run the search. Both files should now be found.
+        let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"app.js".to_string()));
+        assert!(files.contains(
+            &"node_modules/some_dep.js"
+                .to_string()
+                .replace('/', &std::path::MAIN_SEPARATOR.to_string())
+        ));
+    }
 }
 
 // END rdump/src/commands/search.rs
@@ -500,14 +502,12 @@ pub fn save_config(config: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lazy_static::lazy_static;
+    use once_cell::sync::Lazy;
     use std::io::Write;
     use std::sync::Mutex;
     use tempfile::tempdir;
 
-    lazy_static! {
-        static ref ENV_MUTEX: Mutex<()> = Mutex::new(());
-    }
+    static ENV_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn test_find_local_config_in_parent() {
@@ -573,12 +573,14 @@ mod tests {
         assert_eq!(config.presets.len(), 3);
         assert_eq!(config.presets.get("rust").unwrap(), "ext:rs");
         assert_eq!(config.presets.get("scripts").unwrap(), "ext:sh");
-        assert_eq!(config.presets.get("docs").unwrap(), "ext:md | ext:txt");
+        assert_eq!(
+            config.presets.get("docs").unwrap(),
+            "ext:md | ext:txt"
+        );
 
         env::remove_var("RDUMP_TEST_CONFIG_DIR");
     }
 }
-
 
 // END rdump/src/config.rs
 
@@ -673,36 +675,44 @@ impl Evaluator {
     fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<MatchResult> {
         match node {
             AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
-           AstNode::LogicalOp(op, left, right) => {
-               let left_res = self.evaluate_node(left, context)?;
-               match op {
-                   crate::parser::LogicalOperator::And => {
-                       // Short-circuit if the left side is false or has no hunks
-                       if !left_res.is_match() {
-                           return Ok(MatchResult::Boolean(false));
-                       }
-                       let right_res = self.evaluate_node(right, context)?;
-                       if !right_res.is_match() {
-                           return Ok(MatchResult::Boolean(false));
-                       }
-                       // Both sides match, combine the results.
-                       return Ok(left_res.combine_with(right_res));
-                   }
-                   crate::parser::LogicalOperator::Or => {
-                       if left_res.is_match() {
-                           // If the left side matches, we might still need the right side's hunks.
-                           let right_res = self.evaluate_node(right, context)?;
-                           return Ok(left_res.combine_with(right_res));
-                       }
-                       // Left side didn't match, so the result is just the right side.
-                       return self.evaluate_node(right, context);
-                   }
-               }
-           }
-           AstNode::Not(node) => {
-               let result = self.evaluate_node(node, context)?;
-               Ok(MatchResult::Boolean(!result.is_match()))
-           }
+            AstNode::LogicalOp(op, left, right) => {
+                match op {
+                    crate::parser::LogicalOperator::And => {
+                        let left_res = self.evaluate_node(left, context)?;
+                        if !left_res.is_match() {
+                            return Ok(MatchResult::Boolean(false));
+                        }
+                        let right_res = self.evaluate_node(right, context)?;
+                        if !right_res.is_match() {
+                            return Ok(MatchResult::Boolean(false));
+                        }
+                        Ok(left_res.combine_with(right_res))
+                    }
+                    crate::parser::LogicalOperator::Or => {
+                        let left_res = self.evaluate_node(left, context)?;
+                        // Short-circuit if we have a non-hunkable, definitive match.
+                        // This prevents expensive evaluation of the right side.
+                        if let MatchResult::Boolean(true) = left_res {
+                            return Ok(left_res);
+                        }
+
+                        let right_res = self.evaluate_node(right, context)?;
+
+                        // Combine the results logically.
+                        if left_res.is_match() && right_res.is_match() {
+                            Ok(left_res.combine_with(right_res))
+                        } else if left_res.is_match() {
+                            Ok(left_res) // right side didn't match
+                        } else {
+                            Ok(right_res) // left side didn't match, so result is right
+                        }
+                    }
+                }
+            }
+            AstNode::Not(node) => {
+                let result = self.evaluate_node(node, context)?;
+                Ok(MatchResult::Boolean(!result.is_match()))
+            }
         }
     }
 
@@ -712,39 +722,39 @@ impl Evaluator {
         key: &PredicateKey,
         value: &str,
         context: &mut FileContext,
-   ) -> Result<MatchResult> {
+    ) -> Result<MatchResult> {
         if let Some(evaluator) = self.registry.get(key) {
             evaluator.evaluate(context, key, value)
         } else {
             // Handle unknown or unimplemented predicates gracefully.
-           Ok(MatchResult::Boolean(false))
+            Ok(MatchResult::Boolean(false))
         }
     }
 }
 
 impl MatchResult {
-   /// Returns true if the result is considered a match.
-   pub fn is_match(&self) -> bool {
-       match self {
-           MatchResult::Boolean(b) => *b,
-           MatchResult::Hunks(h) => !h.is_empty(),
-       }
-   }
+    /// Returns true if the result is considered a match.
+    pub fn is_match(&self) -> bool {
+        match self {
+            MatchResult::Boolean(b) => *b,
+            MatchResult::Hunks(h) => !h.is_empty(),
+        }
+    }
 
-   /// Combines two successful match results.
-   pub fn combine_with(self, other: MatchResult) -> Self {
-       match (self, other) {
-           (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-               a.extend(b);
-               a.sort_by_key(|r| r.start_byte);
-               a.dedup();
-               MatchResult::Hunks(a)
-           }
-           (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
-           (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
-           (MatchResult::Boolean(_), MatchResult::Boolean(_)) => MatchResult::Boolean(true),
-       }
-   }
+    /// Combines two successful match results.
+    pub fn combine_with(self, other: MatchResult) -> Self {
+        match (self, other) {
+            (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                a.extend(b);
+                a.sort_by_key(|r| r.start_byte);
+                a.dedup();
+                MatchResult::Hunks(a)
+            }
+            (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
+            (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
+            (MatchResult::Boolean(_), MatchResult::Boolean(_)) => MatchResult::Boolean(true),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -779,7 +789,10 @@ mod tests {
 
         let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail);
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+        assert!(!evaluator_fail
+            .evaluate(&mut context)
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -792,7 +805,10 @@ mod tests {
 
         let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail);
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+        assert!(!evaluator_fail
+            .evaluate(&mut context)
+            .unwrap()
+            .is_match());
     }
 
     #[test]
@@ -805,10 +821,12 @@ mod tests {
 
         let ast_fail = parse_query("!contains:hello").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail);
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+        assert!(!evaluator_fail
+            .evaluate(&mut context)
+            .unwrap()
+            .is_match());
     }
 }
-
 
 // END rdump/src/evaluator.rs
 
@@ -816,7 +834,7 @@ mod tests {
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local}; // For formatting timestamps
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
@@ -832,11 +850,9 @@ use tree_sitter::Range;
 // We need to pass the format enum from main.rs
 use crate::Format;
 
-lazy_static! {
-    // Lazily load syntax and theme sets once.
-    static ref SYNTAX_SET: SyntaxSet = SyntaxSet::load_defaults_newlines();
-    static ref THEME_SET: ThemeSet = ThemeSet::load_defaults();
-}
+// Lazily load syntax and theme sets once.
+static SYNTAX_SET: Lazy<SyntaxSet> = Lazy::new(SyntaxSet::load_defaults_newlines);
+static THEME_SET: Lazy<ThemeSet> = Lazy::new(ThemeSet::load_defaults);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 struct FileOutput {
@@ -892,26 +908,28 @@ pub fn print_output(
         Format::Json => {
             let mut outputs = Vec::new();
             for (path, _) in matching_files {
-               let content = fs::read_to_string(path)
-                   .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
+                let content = fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read file for final output: {}", path.display())
+                })?;
                 outputs.push(FileOutput {
-                   path: path.to_string_lossy().to_string(),
+                    path: path.to_string_lossy().to_string(),
                     content,
                 });
             }
             // Use to_writer_pretty for readable JSON output
-           serde_json::to_writer_pretty(writer, &outputs)?;
+            serde_json::to_writer_pretty(writer, &outputs)?;
         }
         Format::Cat => {
             for (path, _) in matching_files {
-                 let content = fs::read_to_string(path)?;
-                if use_color { // To terminal
-                     print_highlighted_content(
-                         writer,
-                         &content,
-                         &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
-                         with_line_numbers,
-                     )?;
+                let content = fs::read_to_string(path)?;
+                if use_color {
+                    // To terminal
+                    print_highlighted_content(
+                        writer,
+                        &content,
+                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                        with_line_numbers,
+                    )?;
                 } else {
                     print_plain_content(writer, &content, with_line_numbers)?; // To file/pipe
                 }
@@ -936,38 +954,54 @@ pub fn print_output(
                 }
             }
         }
-       Format::Hunks => {
-           for (i, (path, hunks)) in matching_files.iter().enumerate() {
-               if i > 0 {
-                   writeln!(writer, "\n---\n")?;
-               }
-               writeln!(writer, "File: {}", path.display())?;
-               writeln!(writer, "---")?;
-               let content = fs::read_to_string(path)?;
-               let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+        Format::Hunks => {
+            for (i, (path, hunks)) in matching_files.iter().enumerate() {
+                if i > 0 {
+                    writeln!(writer, "\n---\n")?;
+                }
+                writeln!(writer, "File: {}", path.display())?;
+                writeln!(writer, "---")?;
+                let content = fs::read_to_string(path)?;
+                let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-               if hunks.is_empty() {
-                   // This was a boolean match, print the whole file
-                   if use_color {
-                       print_highlighted_content(writer, &content, extension, with_line_numbers)?;
-                   } else {
-                       print_markdown_fenced_content(writer, &content, extension, with_line_numbers)?;
-                   }
-               } else {
-                   // This was a hunk match, print only the matched ranges
-                   let content_bytes = content.as_bytes();
-                   for hunk_range in hunks {
-                       let hunk_content = &content_bytes[hunk_range.start_byte..hunk_range.end_byte];
-                       let hunk_str = std::str::from_utf8(hunk_content)?;
-                       if use_color {
-                           print_highlighted_content(writer, hunk_str, extension, with_line_numbers)?;
-                       } else {
-                           print_markdown_fenced_content(writer, hunk_str, extension, with_line_numbers)?;
-                       }
-                   }
-               }
-           }
-       }
+                if hunks.is_empty() {
+                    // This was a boolean match, print the whole file
+                    if use_color {
+                        print_highlighted_content(writer, &content, extension, with_line_numbers)?;
+                    } else {
+                        print_markdown_fenced_content(
+                            writer,
+                            &content,
+                            extension,
+                            with_line_numbers,
+                        )?;
+                    }
+                } else {
+                    // This was a hunk match, print only the matched ranges
+                    let content_bytes = content.as_bytes();
+                    for hunk_range in hunks {
+                        let hunk_content =
+                            &content_bytes[hunk_range.start_byte..hunk_range.end_byte];
+                        let hunk_str = std::str::from_utf8(hunk_content)?;
+                        if use_color {
+                            print_highlighted_content(
+                                writer,
+                                hunk_str,
+                                extension,
+                                with_line_numbers,
+                            )?;
+                        } else {
+                            print_markdown_fenced_content(
+                                writer,
+                                hunk_str,
+                                extension,
+                                with_line_numbers,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1101,7 +1135,10 @@ mod tests {
     fn test_format_paths() {
         let file1 = create_temp_file_with_content("a");
         let file2 = create_temp_file_with_content("b");
-        let paths = vec![(file1.path().to_path_buf(), vec![]), (file2.path().to_path_buf(), vec![])];
+        let paths = vec![
+            (file1.path().to_path_buf(), vec![]),
+            (file2.path().to_path_buf(), vec![]),
+        ];
         let mut writer = Vec::new();
         print_output(&mut writer, &paths, &Format::Paths, false, false).unwrap();
         let output = String::from_utf8(writer).unwrap();
@@ -1139,11 +1176,13 @@ mod tests {
         let output = String::from_utf8(writer).unwrap();
 
         // Check for evidence of ANSI color, not the exact codes which can be brittle.
-        assert!(output.contains("\x1b["), "Should contain ANSI escape codes");
+        assert!(
+            output.contains("\x1b["),
+            "Should contain ANSI escape codes"
+        );
         assert!(!output.contains("```"), "Should not contain markdown fences");
     }
 }
-
 
 // END rdump/src/formatter.rs
 
@@ -1160,19 +1199,9 @@ mod predicates;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
-use lazy_static::lazy_static;
-use crate::predicates::code_aware::profiles::list_language_profiles;
 
 // Bring our command functions into scope
-use commands::{preset::run_preset, search::run_search, lang::run_lang};
-
-lazy_static! {
-    // Generate the help text for supported languages at runtime.
-    static ref SUPPORTED_LANGUAGES_HELP: String = {
-        let names: Vec<&str> = list_language_profiles().iter().map(|p| p.name).collect();
-        format!("(e.g., {})", names.join(", "))
-    };
-}
+use commands::{lang::run_lang, preset::run_preset, search::run_search};
 
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
@@ -1207,7 +1236,7 @@ pub enum ColorChoice {
     Never,
 }
 
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Debug)]
 pub struct SearchArgs {
     /// The query string to search for, using rdump Query Language (RQL).
     ///
@@ -1225,7 +1254,7 @@ pub struct SearchArgs {
     ///   contains:<str>     - Literal string a file contains
     ///   matches:<regex>    - Regular expression a file's content matches
     ///
-   #[doc = "CODE-AWARE PREDICATES for supported languages:"]
+    #[doc = "CODE-AWARE PREDICATES for supported languages:"]
     ///   def:<str>          - A generic definition (class, struct, enum, etc.)
     ///   func:<str>         - A function or method
     ///   import:<str>       - An import or use statement
@@ -1260,8 +1289,8 @@ pub struct SearchArgs {
     pub no_ignore: bool,
     #[arg(long)]
     pub hidden: bool,
-   #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help = "When to use syntax highlighting")]
-   pub color: ColorChoice,
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help = "When to use syntax highlighting")]
+    pub color: ColorChoice,
     #[arg(long)]
     pub max_depth: Option<usize>,
 
@@ -1327,10 +1356,10 @@ pub enum Format {
 /// The main entry point.
 /// Its only job is to parse the CLI and delegate to the correct command module.
 fn main() -> Result<()> {
-    let mut cli = Cli::parse();
+    let cli = Cli::parse();
 
-    match &mut cli.command {
-        Commands::Search(args) => {
+    match cli.command {
+        Commands::Search(mut args) => {
             // --- Handle Shorthand Flags ---
             if args.no_headers {
                 args.format = Format::Cat;
@@ -1338,16 +1367,17 @@ fn main() -> Result<()> {
             if args.find {
                 args.format = Format::Find;
             }
-            run_search(args.clone())
+            run_search(args)
         }
         Commands::Lang(args) => {
             // Default to `list` if no subcommand is given for `lang`
-            let action = args.action.clone().unwrap_or(LangAction::List);
+            let action = args.action.unwrap_or(LangAction::List);
             run_lang(action)
         }
-        Commands::Preset(args) => run_preset(args.action.clone()),
+        Commands::Preset(args) => run_preset(args.action),
     }
 }
+
 
 // END rdump/src/main.rs
 
@@ -1880,15 +1910,15 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
 // START rdump/src/predicates/code_aware/profiles/mod.rs
 
 use crate::parser::PredicateKey;
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 
+mod go;
+mod java;
 mod javascript;
 mod python;
 mod rust;
 mod typescript;
-mod go;
-mod java;
 
 /// Defines the tree-sitter queries and metadata for a specific language.
 pub struct LanguageProfile {
@@ -1898,8 +1928,8 @@ pub struct LanguageProfile {
     pub queries: HashMap<PredicateKey, String>,
 }
 
-lazy_static! {
-    pub(super) static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
+pub(super) static LANGUAGE_PROFILES: Lazy<HashMap<&'static str, LanguageProfile>> =
+    Lazy::new(|| {
         let mut m = HashMap::new();
         m.insert("rs", rust::create_rust_profile());
         m.insert("py", python::create_python_profile());
@@ -1908,13 +1938,13 @@ lazy_static! {
         m.insert("ts", typescript::create_typescript_profile());
         m.insert("js", javascript::create_javascript_profile());
         m
-    };
-}
+    });
 
 /// Returns a list of all configured language profiles.
 pub fn list_language_profiles() -> Vec<&'static LanguageProfile> {
     LANGUAGE_PROFILES.values().collect()
 }
+
 
 // END rdump/src/predicates/code_aware/profiles/mod.rs
 

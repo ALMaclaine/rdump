@@ -93,14 +93,14 @@ impl From<&str> for PredicateKey {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum AstNode {
     Predicate(PredicateKey, String),
     LogicalOp(LogicalOperator, Box<AstNode>, Box<AstNode>),
     Not(Box<AstNode>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum LogicalOperator {
     And,
     Or,
@@ -168,10 +168,10 @@ fn build_ast_from_logical_op(pair: Pair<Rule>) -> Result<AstNode> {
 
 fn unescape_value(value: &str) -> String {
     if value.starts_with('"') && value.ends_with('"') {
-        return value[1..value.len() - 1].replace("\"", "\"");
+        return value[1..value.len() - 1].replace("\\\"", "\"");
     }
     if value.starts_with('\'') && value.ends_with('\'') {
-        return value[1..value.len() - 1].replace("\\'", "\'");
+        return value[1..value.len() - 1].replace("\\\'", "'");
     }
     value.to_string()
 }
@@ -252,8 +252,8 @@ mod tests {
 
     #[test]
     fn test_unescape_value() {
-        assert_eq!(unescape_value(r#""hello "world"""#), "hello \"world\"");
-        assert_eq!(unescape_value(r#"'hello 'world''"#), "hello 'world'");
+        assert_eq!(unescape_value(r#""hello \"world\"""#), "hello \"world\"");
+        assert_eq!(unescape_value(r#"'hello \'world''"#), "hello 'world'");
         assert_eq!(unescape_value("no_quotes"), "no_quotes");
     }
 

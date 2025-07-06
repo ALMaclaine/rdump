@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tree_sitter::{Parser as TreeSitterParser, Range, Tree};
 
 use crate::parser::{AstNode, PredicateKey};
-use crate::predicates::{create_predicate_registry, PredicateEvaluator};
+use crate::predicates::PredicateEvaluator;
 
 /// The result of an evaluation for a single file.
 #[derive(Debug, Clone)]
@@ -71,11 +71,11 @@ pub struct Evaluator {
 }
 
 impl Evaluator {
-    pub fn new(ast: AstNode) -> Self {
-        Evaluator {
-            ast,
-            registry: create_predicate_registry(),
-        }
+    pub fn new(
+        ast: AstNode,
+        registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>>,
+    ) -> Self {
+        Evaluator { ast, registry }
     }
 
     /// Evaluates the query for a given file path.
@@ -121,8 +121,18 @@ impl Evaluator {
                     }
                 }
             }
-            AstNode::Not(node) => {
-                let result = self.evaluate_node(node, context)?;
+            AstNode::Not(inner_node) => {
+                // For the pre-filtering pass, if the inner predicate of a NOT is not in the
+                // registry, we cannot definitively say the file *doesn't* match.
+                // For example, for `!contains:foo`, the pre-filter doesn't know the content.
+                // So, we must assume it *could* match and let the full evaluator decide.
+                if let AstNode::Predicate(key, _) = &**inner_node {
+                    if !self.registry.contains_key(key) {
+                        return Ok(MatchResult::Boolean(true)); // Pass to the next stage
+                    }
+                }
+                // Otherwise, evaluate the inner node and negate the result.
+                let result = self.evaluate_node(inner_node, context)?;
                 Ok(MatchResult::Boolean(!result.is_match()))
             }
         }
@@ -138,8 +148,10 @@ impl Evaluator {
         if let Some(evaluator) = self.registry.get(key) {
             evaluator.evaluate(context, key, value)
         } else {
-            // Handle unknown or unimplemented predicates gracefully.
-            Ok(MatchResult::Boolean(false))
+            // If a predicate is not in the current registry (e.g., a content predicate
+            // during the metadata-only pass), it's considered a "pass" for this stage.
+            // The full evaluator in the next stage will make the final decision.
+            Ok(MatchResult::Boolean(true))
         }
     }
 }
@@ -173,6 +185,7 @@ impl MatchResult {
 mod tests {
     use super::*;
     use crate::parser::parse_query;
+    use crate::predicates;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -187,7 +200,7 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("contains:world").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
     }
 
@@ -196,11 +209,11 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("contains:hello & contains:world").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
 
         let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail);
+        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
         assert!(!evaluator_fail
             .evaluate(&mut context)
             .unwrap()
@@ -212,11 +225,11 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("contains:hello | contains:goodbye").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
 
         let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail);
+        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
         assert!(!evaluator_fail
             .evaluate(&mut context)
             .unwrap()
@@ -228,11 +241,11 @@ mod tests {
         let file = create_temp_file("hello world");
         let mut context = FileContext::new(file.path().to_path_buf());
         let ast = parse_query("!contains:goodbye").unwrap();
-        let evaluator = Evaluator::new(ast);
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
 
         let ast_fail = parse_query("!contains:hello").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail);
+        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
         assert!(!evaluator_fail
             .evaluate(&mut context)
             .unwrap()
