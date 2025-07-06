@@ -30,5 +30,10 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
    queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
    queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "TypeScript",
+        extensions: vec!["ts", "tsx"],
+        language,
+        queries,
+    }
 }

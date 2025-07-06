@@ -4,7 +4,7 @@ use crate::predicates::PredicateEvaluator;
 use anyhow::{Context, Result};
 use tree_sitter::{Query, QueryCursor};
 
-mod profiles;
+pub mod profiles;
 
 /// The evaluator that uses tree-sitter to perform code-aware queries.
 #[derive(Debug, Clone)]
@@ -18,7 +18,8 @@ impl PredicateEvaluator for CodeAwareEvaluator {
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        let profile = match profiles::LANGUAGE_PROFILES.get(extension) {
+        let binding = profiles::list_language_profiles();
+        let profile = match binding.iter().find(|p| p.extensions.contains(&extension)) {
             Some(p) => p,
             None => return Ok(MatchResult::Boolean(false)), // Not a supported language for this predicate.
         };

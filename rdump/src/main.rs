@@ -9,9 +9,19 @@ mod predicates;
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
+use lazy_static::lazy_static;
+use crate::predicates::code_aware::profiles::list_language_profiles;
 
 // Bring our command functions into scope
-use commands::{preset::run_preset, search::run_search};
+use commands::{preset::run_preset, search::run_search, lang::run_lang};
+
+lazy_static! {
+    // Generate the help text for supported languages at runtime.
+    static ref SUPPORTED_LANGUAGES_HELP: String = {
+        let names: Vec<&str> = list_language_profiles().iter().map(|p| p.name).collect();
+        format!("(e.g., {})", names.join(", "))
+    };
+}
 
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
@@ -30,6 +40,9 @@ pub enum Commands {
     /// Search for files using a query (default command).
     #[command(visible_alias = "s")]
     Search(SearchArgs),
+    /// List supported languages and their available predicates.
+    #[command(visible_alias = "l")]
+    Lang(LangArgs),
     /// Manage saved presets.
     #[command(visible_alias = "p")]
     Preset(PresetArgs),
@@ -61,23 +74,23 @@ pub struct SearchArgs {
     ///   contains:<str>     - Literal string a file contains
     ///   matches:<regex>    - Regular expression a file's content matches
     ///
-   /// CODE-AWARE PREDICATES (for Rust, Python, JS, TS):
-   ///   def:<str>          - A generic definition (class, struct, enum, etc.)
-   ///   func:<str>         - A function or method
-   ///   import:<str>       - An import or use statement
-   ///   call:<str>         - A function or method call site
-   ///
-   /// GRANULAR DEFINITIONS:
-   ///   class:<str>        - A class definition
-   ///   struct:<str>       - A struct definition
-   ///   enum:<str>         - An enum definition
-   ///   interface:<str>    - An interface definition
-   ///   trait:<str>        - A trait definition
-   ///   type:<str>         - A type alias
-   ///
-   /// SYNTACTIC CONTENT:
-   ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
-   ///   str:<str>          - Text inside a string literal
+   #[doc = "CODE-AWARE PREDICATES for supported languages:"]
+    ///   def:<str>          - A generic definition (class, struct, enum, etc.)
+    ///   func:<str>         - A function or method
+    ///   import:<str>       - An import or use statement
+    ///   call:<str>         - A function or method call site
+    ///
+    /// GRANULAR DEFINITIONS:
+    ///   class:<str>        - A class definition
+    ///   struct:<str>       - A struct definition
+    ///   enum:<str>         - An enum definition
+    ///   interface:<str>    - An interface definition
+    ///   trait:<str>        - A trait definition
+    ///   type:<str>         - A type alias
+    ///
+    /// SYNTACTIC CONTENT:
+    ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
+    ///   str:<str>          - Text inside a string literal
     #[arg(verbatim_doc_comment)]
     pub query: Option<String>,
     #[arg(long, short)]
@@ -104,6 +117,20 @@ pub struct SearchArgs {
     /// List files with metadata instead of dumping content.
     #[arg(long)]
     pub find: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct LangArgs {
+    #[command(subcommand)]
+    pub action: Option<LangAction>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum LangAction {
+    /// List all supported languages.
+    List,
+    /// Describe the predicates available for a specific language.
+    Describe { language: String },
 }
 
 #[derive(Parser, Debug)]
@@ -155,6 +182,11 @@ fn main() -> Result<()> {
                 args.format = Format::Find;
             }
             run_search(args.clone())
+        }
+        Commands::Lang(args) => {
+            // Default to `list` if no subcommand is given for `lang`
+            let action = args.action.clone().unwrap_or(LangAction::List);
+            run_lang(action)
         }
         Commands::Preset(args) => run_preset(args.action.clone()),
     }

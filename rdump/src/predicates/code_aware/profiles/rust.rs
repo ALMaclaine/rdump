@@ -59,5 +59,10 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
     queries.insert(PredicateKey::Str, "[(string_literal) @match (raw_string_literal) @match]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Rust",
+        extensions: vec!["rs"],
+        language,
+        queries,
+    }
 }

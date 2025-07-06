@@ -37,6 +37,33 @@ pub enum PredicateKey {
     Other(String),
 }
 
+impl AsRef<str> for PredicateKey {
+   fn as_ref(&self) -> &str {
+       match self {
+           PredicateKey::Ext => "ext",
+           PredicateKey::Name => "name",
+           PredicateKey::Path => "path",
+           PredicateKey::Contains => "contains",
+           PredicateKey::Matches => "matches",
+           PredicateKey::Size => "size",
+           PredicateKey::Modified => "modified",
+           PredicateKey::Def => "def",
+           PredicateKey::Func => "func",
+           PredicateKey::Import => "import",
+           PredicateKey::Class => "class",
+           PredicateKey::Struct => "struct",
+           PredicateKey::Enum => "enum",
+           PredicateKey::Interface => "interface",
+           PredicateKey::Trait => "trait",
+           PredicateKey::Type => "type",
+           PredicateKey::Comment => "comment",
+           PredicateKey::Str => "str",
+           PredicateKey::Call => "call",
+           PredicateKey::Other(s) => s.as_str(),
+       }
+   }
+}
+
 impl From<&str> for PredicateKey {
     fn from(s: &str) -> Self {
         match s {

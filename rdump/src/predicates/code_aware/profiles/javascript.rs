@@ -24,5 +24,10 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
    queries.insert(PredicateKey::Comment, "[(comment) @match (regex) @match]".to_string()); // JS Regexes are basically comments
    queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "JavaScript",
+        extensions: vec!["js", "jsx"],
+        language,
+        queries,
+    }
 }

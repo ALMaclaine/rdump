@@ -9,10 +9,12 @@ mod typescript;
 mod go;
 mod java;
 
-/// Defines the tree-sitter queries for a specific language.
-pub(super) struct LanguageProfile {
+/// Defines the tree-sitter queries and metadata for a specific language.
+pub struct LanguageProfile {
+    pub name: &'static str,
+    pub extensions: Vec<&'static str>,
     pub(super) language: tree_sitter::Language,
-    pub(super) queries: HashMap<PredicateKey, String>,
+    pub queries: HashMap<PredicateKey, String>,
 }
 
 lazy_static! {
@@ -22,12 +24,13 @@ lazy_static! {
         m.insert("py", python::create_python_profile());
         m.insert("go", go::create_go_profile());
         m.insert("java", java::create_java_profile());
-        let ts_profile = typescript::create_typescript_profile();
-        m.insert("ts", ts_profile);
-        m.insert("tsx", typescript::create_typescript_profile());
-        let js_profile = javascript::create_javascript_profile();
-        m.insert("js", js_profile);
-        m.insert("jsx", javascript::create_javascript_profile());
+        m.insert("ts", typescript::create_typescript_profile());
+        m.insert("js", javascript::create_javascript_profile());
         m
     };
+}
+
+/// Returns a list of all configured language profiles.
+pub fn list_language_profiles() -> Vec<&'static LanguageProfile> {
+    LANGUAGE_PROFILES.values().collect()
 }

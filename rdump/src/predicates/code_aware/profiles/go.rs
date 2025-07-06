@@ -25,5 +25,10 @@ pub(super) fn create_go_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
     queries.insert(PredicateKey::Str, "[ (interpreted_string_literal) @match (raw_string_literal) @match ]".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Go",
+        extensions: vec!["go"],
+        language,
+        queries,
+    }
 }

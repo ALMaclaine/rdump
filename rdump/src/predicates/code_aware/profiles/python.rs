@@ -49,5 +49,10 @@ pub(super) fn create_python_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
     queries.insert(PredicateKey::Str, "(string) @match".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Python",
+        extensions: vec!["py"],
+        language,
+        queries,
+    }
 }

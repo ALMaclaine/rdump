@@ -26,5 +26,10 @@ pub(super) fn create_java_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
     queries.insert(PredicateKey::Str, "(string_literal) @match".to_string());
 
-    LanguageProfile { language, queries }
+    LanguageProfile {
+        name: "Java",
+        extensions: vec!["java"],
+        language,
+        queries,
+    }
 }
