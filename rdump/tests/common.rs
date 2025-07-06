@@ -143,5 +143,29 @@ func main() {
        .write_all(go_content.as_bytes())
        .unwrap();
 
+   // --- NEW: Add a Java file ---
+   let java_dir = dir.path().join("src/main/java/com/example");
+   fs::create_dir_all(&java_dir).unwrap();
+   let java_content = r#"
+package com.example;
+
+import java.util.ArrayList;
+
+/**
+ * Main application class.
+ * HACK: This is just for a test.
+ */
+public class Application {
+    public static void main(String[] args) {
+        ArrayList<String> list = new ArrayList<>();
+        System.out.println("Hello from Java!");
+    }
+}
+"#;
+   fs::File::create(java_dir.join("Application.java"))
+       .unwrap()
+       .write_all(java_content.as_bytes())
+       .unwrap();
+
     dir
 }

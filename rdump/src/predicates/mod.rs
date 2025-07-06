@@ -468,5 +468,43 @@ def process_data():
        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fmt").unwrap().is_match());
        let mut ctx = FileContext::new(file_path.clone());
        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "represents a user").unwrap().is_match());
+    }
+
+   #[test]
+   fn test_code_aware_evaluator_java_suite() {
+       let java_code = r#"
+           package com.example;
+
+           import java.util.List;
+
+           // Represents a user
+           public class User {
+               public User() {
+                   System.out.println("User created");
+               }
+
+               public void greet() {}
+           }
+       "#;
+
+       let temp_dir = tempfile::tempdir().unwrap();
+       let file_path = temp_dir.path().join("User.java");
+       let mut file = std::fs::File::create(&file_path).unwrap();
+       file.write_all(java_code.as_bytes()).unwrap();
+
+       let evaluator = CodeAwareEvaluator;
+
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Class, "User").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "greet").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "println").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "java.util.List").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "Represents a user").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "User created").unwrap().is_match());
    }
 }
