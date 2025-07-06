@@ -1,5 +1,5 @@
 use super::PredicateEvaluator;
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
 
@@ -10,9 +10,9 @@ impl PredicateEvaluator for PathEvaluator {
         context: &mut FileContext,
         _key: &PredicateKey,
         value: &str,
-    ) -> Result<bool> {
+    ) -> Result<MatchResult> {
         let path_str = context.path.to_string_lossy();
-        Ok(path_str.contains(value))
+        Ok(MatchResult::Boolean(path_str.contains(value)))
     }
 }
 
@@ -27,15 +27,19 @@ mod tests {
         let evaluator = PathEvaluator;
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Path, "project/src")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Path, "/home/user")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::Path, "project/lib")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Path, "main.rs")
-            .unwrap());
+            .unwrap()
+            .is_match());
     }
 }

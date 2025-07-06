@@ -8,8 +8,9 @@ use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tempfile::NamedTempFile;
+use tree_sitter::Range;
 
-use crate::evaluator::{Evaluator, FileContext};
+use crate::evaluator::{Evaluator, FileContext, MatchResult};
 use crate::formatter;
 use crate::parser;
 
@@ -54,24 +55,33 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     // --- 3. Evaluate files ---
     let evaluator = Evaluator::new(ast);
-    let mut matching_files: Vec<PathBuf> = candidate_files
+   let mut matching_files: Vec<(PathBuf, Vec<Range>)> = candidate_files
         .par_iter()
-       .filter(|path| {
-           // This closure now only returns true or false, reducing allocations.
-           let mut context = FileContext::new((*path).clone());
-           match evaluator.evaluate(&mut context) {
-               Ok(true) => true,
-               Ok(false) => false,
-               Err(e) => {
-                   eprintln!("Error evaluating file {}: {}", path.display(), e);
-                   false
+        .filter_map(|path| {
+            let mut context = FileContext::new(path.clone());
+            match evaluator.evaluate(&mut context) {
+               Ok(MatchResult::Boolean(true)) => {
+                   // For boolean matches, we don't have specific hunks, so we pass an empty Vec.
+                   // The formatter will treat this as "the whole file".
+                   Some((path.clone(), Vec::new()))
                }
-           }
-       })
-       .map(|path| path.clone()) // Clones only the paths that passed the filter.
+               Ok(MatchResult::Boolean(false)) => None,
+               Ok(MatchResult::Hunks(hunks)) => {
+                   if hunks.is_empty() {
+                       None
+                   } else {
+                       Some((path.clone(), hunks))
+                   }
+               }
+                Err(e) => {
+                    eprintln!("Error evaluating file {}: {}", path.display(), e);
+                   None
+                }
+            }
+        })
         .collect();
 
-    matching_files.sort();
+    matching_files.sort_by(|a, b| a.0.cmp(&b.0));
 
     // --- 4. Format and print results ---
     let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {

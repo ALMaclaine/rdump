@@ -137,6 +137,7 @@ pub enum Format {
     Paths,
     Cat,
     Find,
+   Hunks,
 }
 
 /// The main entry point.

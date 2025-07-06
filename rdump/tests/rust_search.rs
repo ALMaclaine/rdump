@@ -187,3 +187,38 @@ fn test_call_predicate_rust() {
         .stdout(predicate::str::contains("src/main.rs")) // The call is in main.rs
         .stdout(predicate::str::contains("src/lib.rs").not()); // The definition is in lib.rs
 }
+
+#[test]
+fn test_logical_operators_with_hunks() {
+    let dir = setup_test_project();
+    // Query: find the file that defines the `Cli` struct AND ALSO contains a `TODO` comment.
+    // This should only match main.rs
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("--format=hunks")
+        .arg("struct:Cli & comment:TODO")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/main.rs"))
+        .stdout(predicate::str::contains("Cli"))
+        .stdout(predicate::str::contains("TODO"))
+        .stdout(predicate::str::contains("src/lib.rs").not());
+}
+
+#[test]
+fn test_negation_with_hunks() {
+    let dir = setup_test_project();
+    // Query: find files with `User` struct but NOT containing `TODO`
+    // This should only match lib.rs
+    Command::cargo_bin("rdump").unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("--format=hunks")
+        .arg("struct:User & !comment:TODO")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/lib.rs"))
+        .stdout(predicate::str::contains("User"))
+        .stdout(predicate::str::contains("src/main.rs").not());
+}

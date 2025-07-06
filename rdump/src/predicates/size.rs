@@ -1,5 +1,5 @@
 use super::{helpers, PredicateEvaluator};
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
 
@@ -10,10 +10,12 @@ impl PredicateEvaluator for SizeEvaluator {
         context: &mut FileContext,
         _key: &PredicateKey,
         value: &str,
-    ) -> Result<bool> {
+    ) -> Result<MatchResult> {
         let metadata = context.path.metadata()?;
         let file_size = metadata.len();
-        helpers::parse_and_compare_size(file_size, value)
+        Ok(MatchResult::Boolean(helpers::parse_and_compare_size(
+            file_size, value,
+        )?))
     }
 }
 
@@ -37,12 +39,15 @@ mod tests {
         let evaluator = SizeEvaluator;
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Size, ">1000")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::Size, "<1kb")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Size, ">0.9kb")
-            .unwrap());
+            .unwrap()
+            .is_match());
     }
 }

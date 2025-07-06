@@ -1,5 +1,5 @@
 use super::PredicateEvaluator;
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
 
@@ -11,9 +11,9 @@ impl PredicateEvaluator for ContainsEvaluator {
         context: &mut FileContext,
         _key: &PredicateKey,
         value: &str,
-    ) -> Result<bool> {
+    ) -> Result<MatchResult> {
         let content = context.get_content()?;
-        Ok(content.contains(value))
+        Ok(MatchResult::Boolean(content.contains(value)))
     }
 }
 
@@ -34,12 +34,15 @@ mod tests {
         let evaluator = ContainsEvaluator;
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Contains, "world")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Contains, "is a test")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::Contains, "goodbye")
-            .unwrap());
+            .unwrap()
+            .is_match());
     }
 }

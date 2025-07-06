@@ -1,5 +1,5 @@
 use super::{helpers, PredicateEvaluator};
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
 
@@ -10,10 +10,13 @@ impl PredicateEvaluator for ModifiedEvaluator {
         context: &mut FileContext,
         _key: &PredicateKey,
         value: &str,
-    ) -> Result<bool> {
+    ) -> Result<MatchResult> {
         let metadata = context.path.metadata()?;
         let modified_time = metadata.modified()?;
-        helpers::parse_and_compare_time(modified_time, value)
+        Ok(MatchResult::Boolean(helpers::parse_and_compare_time(
+            modified_time,
+            value,
+        )?))
     }
 }
 
@@ -38,9 +41,11 @@ mod tests {
         // File was just created
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Modified, ">1m")
-            .unwrap()); // Modified more recently than 1 min ago
+            .unwrap()
+            .is_match()); // Modified more recently than 1 min ago
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::Modified, "<1m")
-            .unwrap()); // Not modified longer than 1 min ago
+            .unwrap()
+            .is_match()); // Not modified longer than 1 min ago
     }
 }

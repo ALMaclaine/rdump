@@ -11,6 +11,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{Style, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use tree_sitter::Range;
 
 // We need to pass the format enum from main.rs
 use crate::Format;
@@ -30,14 +31,14 @@ struct FileOutput {
 /// Formats and prints the final output to a generic writer based on the chosen format.
 pub fn print_output(
     writer: &mut impl Write,
-    matching_files: &[PathBuf],
+    matching_files: &[(PathBuf, Vec<Range>)],
     format: &Format,
     with_line_numbers: bool,
     use_color: bool,
 ) -> Result<()> {
     match format {
         Format::Find => {
-            for path in matching_files {
+            for (path, _) in matching_files {
                 let metadata = fs::metadata(path)
                     .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
                 let size = metadata.len();
@@ -68,13 +69,13 @@ pub fn print_output(
             }
         }
         Format::Paths => {
-            for path in matching_files {
+            for (path, _) in matching_files {
                 writeln!(writer, "{}", path.display())?;
             }
         }
         Format::Json => {
             let mut outputs = Vec::new();
-            for path in matching_files {
+            for (path, _) in matching_files {
                let content = fs::read_to_string(path)
                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
                 outputs.push(FileOutput {
@@ -86,7 +87,7 @@ pub fn print_output(
            serde_json::to_writer_pretty(writer, &outputs)?;
         }
         Format::Cat => {
-            for path in matching_files {
+            for (path, _) in matching_files {
                  let content = fs::read_to_string(path)?;
                 if use_color { // To terminal
                      print_highlighted_content(
@@ -101,7 +102,7 @@ pub fn print_output(
             }
         }
         Format::Markdown => {
-            for (i, path) in matching_files.iter().enumerate() {
+            for (i, (path, _)) in matching_files.iter().enumerate() {
                 if i > 0 {
                     writeln!(writer, "\n---\n")?;
                 }
@@ -119,6 +120,38 @@ pub fn print_output(
                 }
             }
         }
+       Format::Hunks => {
+           for (i, (path, hunks)) in matching_files.iter().enumerate() {
+               if i > 0 {
+                   writeln!(writer, "\n---\n")?;
+               }
+               writeln!(writer, "File: {}", path.display())?;
+               writeln!(writer, "---")?;
+               let content = fs::read_to_string(path)?;
+               let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+               if hunks.is_empty() {
+                   // This was a boolean match, print the whole file
+                   if use_color {
+                       print_highlighted_content(writer, &content, extension, with_line_numbers)?;
+                   } else {
+                       print_markdown_fenced_content(writer, &content, extension, with_line_numbers)?;
+                   }
+               } else {
+                   // This was a hunk match, print only the matched ranges
+                   let content_bytes = content.as_bytes();
+                   for hunk_range in hunks {
+                       let hunk_content = &content_bytes[hunk_range.start_byte..hunk_range.end_byte];
+                       let hunk_str = std::str::from_utf8(hunk_content)?;
+                       if use_color {
+                           print_highlighted_content(writer, hunk_str, extension, with_line_numbers)?;
+                       } else {
+                           print_markdown_fenced_content(writer, hunk_str, extension, with_line_numbers)?;
+                       }
+                   }
+               }
+           }
+       }
     }
     Ok(())
 }
@@ -241,7 +274,7 @@ mod tests {
     #[test]
     fn test_format_plain_cat_with_line_numbers() {
         let file = create_temp_file_with_content("a\nb");
-        let paths = vec![file.path().to_path_buf()];
+        let paths = vec![(file.path().to_path_buf(), vec![])];
         let mut writer = Vec::new();
         print_output(&mut writer, &paths, &Format::Cat, true, false).unwrap();
         let output = String::from_utf8(writer).unwrap();
@@ -252,7 +285,7 @@ mod tests {
     fn test_format_paths() {
         let file1 = create_temp_file_with_content("a");
         let file2 = create_temp_file_with_content("b");
-        let paths = vec![file1.path().to_path_buf(), file2.path().to_path_buf()];
+        let paths = vec![(file1.path().to_path_buf(), vec![]), (file2.path().to_path_buf(), vec![])];
         let mut writer = Vec::new();
         print_output(&mut writer, &paths, &Format::Paths, false, false).unwrap();
         let output = String::from_utf8(writer).unwrap();
@@ -263,7 +296,7 @@ mod tests {
     #[test]
     fn test_format_markdown_with_fences() {
         let file = create_temp_file_with_content("line 1");
-        let paths = vec![file.path().to_path_buf()];
+        let paths = vec![(file.path().to_path_buf(), vec![])];
         let mut writer = Vec::new();
 
         // Test with use_color = false to get markdown fences
@@ -284,7 +317,7 @@ mod tests {
         let rs_path = file.path().with_extension("rs");
         std::fs::rename(file.path(), &rs_path).unwrap();
         
-        let paths = vec![rs_path];
+        let paths = vec![(rs_path, vec![])];
         let mut writer = Vec::new();
         print_output(&mut writer, &paths, &Format::Cat, false, true).unwrap();
         let output = String::from_utf8(writer).unwrap();

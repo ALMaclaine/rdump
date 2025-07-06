@@ -1,5 +1,5 @@
 use super::PredicateEvaluator;
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
 
@@ -10,10 +10,10 @@ impl PredicateEvaluator for MatchesEvaluator {
         context: &mut FileContext,
         _key: &PredicateKey,
         value: &str,
-    ) -> Result<bool> {
+    ) -> Result<MatchResult> {
         let content = context.get_content()?;
         let re = regex::Regex::new(value)?;
-        Ok(re.is_match(content))
+        Ok(MatchResult::Boolean(re.is_match(content)))
     }
 }
 
@@ -39,19 +39,26 @@ mod tests {
             .evaluate(
                 &mut context,
                 &PredicateKey::Matches,
-                "version = \"[0-9]+\\.[0-9]+\\.[0-9]+\""
+                r#"version = "[0-9]+\.[0-9]+\.[0-9]+""#
             )
-            .unwrap());
+            .unwrap()
+            .is_match());
         // Test regex that spans lines
         assert!(evaluator
-            .evaluate(&mut context, &PredicateKey::Matches, "(?s)version.*author")
-            .unwrap());
+            .evaluate(
+                &mut context,
+                &PredicateKey::Matches,
+                r#"(?s)version.*author"#
+            )
+            .unwrap()
+            .is_match());
         assert!(!evaluator
             .evaluate(
                 &mut context,
                 &PredicateKey::Matches,
-                "^version = \"1.0.0\"$"
+                r#"^version = "1.0.0"$"#
             )
-            .unwrap());
+            .unwrap()
+            .is_match());
     }
 }

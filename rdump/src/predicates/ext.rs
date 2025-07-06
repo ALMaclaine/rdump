@@ -1,5 +1,5 @@
 use super::PredicateEvaluator;
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
 
@@ -10,13 +10,13 @@ impl PredicateEvaluator for ExtEvaluator {
         context: &mut FileContext,
         _key: &PredicateKey,
         value: &str,
-    ) -> Result<bool> {
+    ) -> Result<MatchResult> {
         let file_ext = context
             .path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        Ok(file_ext.eq_ignore_ascii_case(value))
+        Ok(MatchResult::Boolean(file_ext.eq_ignore_ascii_case(value)))
     }
 }
 
@@ -35,23 +35,28 @@ mod tests {
         let evaluator = ExtEvaluator;
         assert!(evaluator
             .evaluate(&mut context_rs, &PredicateKey::Ext, "rs")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(!evaluator
             .evaluate(&mut context_rs, &PredicateKey::Ext, "toml")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(
             evaluator
                 .evaluate(&mut context_toml, &PredicateKey::Ext, "toml")
-                .unwrap(),
+                .unwrap()
+                .is_match(),
             "Should be case-insensitive"
         );
         assert!(!evaluator
             .evaluate(&mut context_no_ext, &PredicateKey::Ext, "rs")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(
             !evaluator
                 .evaluate(&mut context_dotfile, &PredicateKey::Ext, "bashrc")
-                .unwrap(),
+                .unwrap()
+                .is_match(),
             "Dotfiles should have no extension"
         );
     }

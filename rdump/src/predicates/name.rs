@@ -1,5 +1,5 @@
 use super::PredicateEvaluator;
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
 
@@ -10,14 +10,14 @@ impl PredicateEvaluator for NameEvaluator {
         context: &mut FileContext,
         _key: &PredicateKey,
         value: &str,
-    ) -> Result<bool> {
+    ) -> Result<MatchResult> {
         let file_name = context
             .path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("");
         let pattern = glob::Pattern::new(value)?;
-        Ok(pattern.matches(file_name))
+        Ok(MatchResult::Boolean(pattern.matches(file_name)))
     }
 }
 
@@ -34,21 +34,25 @@ mod tests {
         let evaluator = NameEvaluator;
         assert!(evaluator
             .evaluate(&mut context1, &PredicateKey::Name, "Cargo.toml")
-            .unwrap());
+            .unwrap()
+            .is_match());
         assert!(
             evaluator
                 .evaluate(&mut context1, &PredicateKey::Name, "C*.toml")
-                .unwrap(),
+                .unwrap()
+                .is_match(),
             "Glob pattern should match"
         );
         assert!(
             evaluator
                 .evaluate(&mut context2, &PredicateKey::Name, "*.rs")
-                .unwrap(),
+                .unwrap()
+                .is_match(),
             "Glob pattern should match"
         );
         assert!(!evaluator
             .evaluate(&mut context1, &PredicateKey::Name, "*.rs")
-            .unwrap());
+            .unwrap()
+            .is_match());
     }
 }

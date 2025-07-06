@@ -1,4 +1,4 @@
-use crate::evaluator::FileContext;
+use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use crate::predicates::PredicateEvaluator;
 use anyhow::{Context, Result};
@@ -11,7 +11,7 @@ mod profiles;
 pub struct CodeAwareEvaluator;
 
 impl PredicateEvaluator for CodeAwareEvaluator {
-    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool> {
+    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<MatchResult> {
         // 1. Determine the language from the file extension.
         let extension = context
             .path
@@ -20,13 +20,13 @@ impl PredicateEvaluator for CodeAwareEvaluator {
             .unwrap_or("");
         let profile = match profiles::LANGUAGE_PROFILES.get(extension) {
             Some(p) => p,
-            None => return Ok(false), // Not a supported language for this predicate.
+            None => return Ok(MatchResult::Boolean(false)), // Not a supported language for this predicate.
         };
 
         // 2. Get the tree-sitter query string for the specific predicate.
         let ts_query_str = match profile.queries.get(key) {
             Some(q) if !q.is_empty() => q,
-            _ => return Ok(false), // This predicate is not implemented for this language yet.
+            _ => return Ok(MatchResult::Boolean(false)), // This predicate is not implemented for this language yet.
         };
 
         // 3. Get content and lazily get the parsed tree from the file context.
@@ -38,6 +38,7 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         let query = Query::new(&profile.language, ts_query_str)
             .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
         let mut cursor = QueryCursor::new();
+        let mut ranges = Vec::new();
 
         // 5. Execute the query and check for a match.
         let captures = cursor.matches(&query, tree.root_node(), content.as_bytes());
@@ -61,12 +62,12 @@ impl PredicateEvaluator for CodeAwareEvaluator {
                    };
 
                     if is_match {
-                        return Ok(true);
+                       ranges.push(captured_node.range());
                     }
                 }
             }
         }
 
-        Ok(false)
+        Ok(MatchResult::Hunks(ranges))
     }
 }
