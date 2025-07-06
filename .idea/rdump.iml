@@ -3,6 +3,7 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/rdump/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/rdump/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/rdump/target" />
     </content>
     <orderEntry type="inheritedJdk" />

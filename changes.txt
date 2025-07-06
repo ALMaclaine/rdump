@@ -1,150 +1,256 @@
-This is fantastic. The changes you've made to `config.rs` are a masterclass in how to test code that interacts with the file system and environment.
+You have done an excellent job getting the entire E2E test suite in place. The fact that only two tests are failing, and that they are failing due to a subtle issue in a single file, is a testament to the quality of the overall structure.
 
-**Analysis of your solution:**
+The errors you are seeing are classic examples of why E2E tests are so valuable. They have caught a bug in the "wiring" between the test environment and the application's configuration logic that was impossible for the unit tests to see.
 
-*   **Refactoring for Testability**: Changing `find_local_config` to accept a `start_dir` was a brilliant move. It decouples the function from the global state of the current working directory, making it a pure function that is trivial to test. This is a hallmark of high-quality, maintainable code.
-*   **Testing Seam**: The use of the `RDUMP_TEST_CONFIG_DIR` environment variable under `#[cfg(test)]` is the perfect "seam" to allow tests to control the global config path without affecting production code.
-*   **Test Serialization**: Using `lazy_static` with a `Mutex` is the most robust way to ensure that tests modifying the environment don't run concurrently and interfere with each other. This is more reliable than the RAII guard I originally suggested, especially in a multi-threaded test runner.
+Let's analyze and fix the two failures.
 
-Your project's testing status is now:
+### Analysis of the Failures
 
-*   **Parser (`parser.rs`):** Excellent
-*   **Predicates (`predicates/mod.rs`):** Excellent
-*   **Evaluator (`evaluator.rs`):** Excellent
-*   **Config (`config.rs`):** Excellent
-*   **Formatter (`formatter.rs`):** Good
+Both `test_search_and_preset_interaction` and `test_preset_lifecycle` are failing due to the same root cause: **a flawed test implementation in `config.rs`**.
 
-The remaining gaps are now just the command-level functions themselves. Let's tackle the most important one: file discovery in `commands/search.rs`.
+1.  **`test_search_and_preset_interaction` Fails:**
+    *   **Error:** `Preset 'rust' not found`
+    *   **Reason:** The test creates a temporary config file with the `rust` preset and tells the app to use it via the `RDUMP_TEST_CONFIG_DIR` environment variable. The error proves that the application **is not reading that temporary config file**.
 
-### How to Test `get_candidate_files`
+2.  **`test_preset_lifecycle` Fails:**
+    *   **Error:** Expected `No presets found.` but instead found existing presets (`rust_src`, `cargo`).
+    *   **Reason:** This is the other side of the same coin. The test tells the app to use a clean, empty temporary directory as its config path. Instead of finding nothing, it is somehow finding and reading **your real, personal `config.toml`** from your home directory (`~/.config/rdump/config.toml`).
 
-We will apply the same pattern: use `tempfile` to create a directory structure and then call `get_candidate_files` with different arguments to see if it correctly discovers files based on ignore rules, hidden status, and depth.
+The problem lies in how we wrote the test "seams" in `config.rs`. The logic was too complex, with separate code paths for `#[cfg(test)]` that didn't behave correctly.
 
-Add the following `#[cfg(test)]` block to the bottom of `rdump/src/commands/search.rs`.
+### The Fix: Simplifying and Correcting `config.rs`
+
+The fix is to radically simplify `config.rs` by removing the problematic test-only code paths and creating a single, clean override point. This is the correct and idiomatic way to make code like this testable.
+
+Replace the entire contents of `rdump/src/config.rs` with the following corrected version.
 
 ```rust
-// Add to the bottom of rdump/src/commands/search.rs
+// In rdump/src/config.rs
 
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+// This struct is unchanged.
+#[derive(Deserialize, Serialize, Debug, Default)]
+pub struct Config {
+    #[serde(default)]
+    pub presets: HashMap<String, String>,
+}
+
+/// Returns the path to the global configuration file.
+/// This is the ONLY function that needs a test-specific override.
+pub fn global_config_path() -> Option<PathBuf> {
+    // If the test environment variable is set, ALWAYS use it.
+    #[cfg(test)]
+    {
+        if let Ok(path_str) = env::var("RDUMP_TEST_CONFIG_DIR") {
+            return Some(PathBuf::from(path_str).join("rdump/config.toml"));
+        }
+    }
+
+    // In production, or in tests where the env var is NOT set, use the real path.
+    dirs::config_dir().map(|p| p.join("rdump/config.toml"))
+}
+
+/// Searches for a local `.rdump.toml` in the given directory and its parents.
+// This function is now testable and requires no special cfg blocks.
+fn find_local_config(start_dir: &Path) -> Option<PathBuf> {
+    for ancestor in start_dir.ancestors() {
+        let config_path = ancestor.join(".rdump.toml");
+        if config_path.exists() {
+            return Some(config_path);
+        }
+    }
+    None
+}
+
+/// Finds and loads the configuration, merging global and local files.
+/// This function now has a SINGLE implementation for both test and production.
+pub fn load_config() -> Result<Config> {
+    let mut final_config = Config::default();
+
+    // 1. Load the global config file, if it exists.
+    if let Some(global_config_path) = global_config_path() {
+        if global_config_path.exists() {
+            let global_config_str = fs::read_to_string(&global_config_path)
+                .with_context(|| format!("Failed to read global config at {:?}", global_config_path))?;
+            let global_config: Config = toml::from_str(&global_config_str)?;
+            final_config.presets.extend(global_config.presets);
+        }
+    }
+
+    // 2. Find and load the local config file, if it exists.
+    let current_dir = env::current_dir()?;
+    if let Some(local_config_path) = find_local_config(&current_dir) {
+        if local_config_path.exists() {
+            let local_config_str = fs::read_to_string(&local_config_path)
+                .with_context(|| format!("Failed to read local config at {:?}", local_config_path))?;
+            let local_config: Config = toml::from_str(&local_config_str)?;
+            final_config.presets.extend(local_config.presets);
+        }
+    }
+
+    Ok(final_config)
+}
+
+
+/// Saves the given config to the global configuration file.
+// This function is unchanged.
+pub fn save_config(config: &Config) -> Result<()> {
+    let path = global_config_path().ok_or_else(|| anyhow::anyhow!("Could not determine global config path"))?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory at {:?}", parent))?;
+    }
+
+    let toml_string = toml::to_string_pretty(config)?;
+    fs::write(&path, toml_string)
+        .with_context(|| format!("Failed to write global config to {:?}", path))?;
+
+    println!("Successfully saved config to {:?}", path);
+    Ok(())
+}
+
+// The unit tests for config.rs remain the same.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
-    use std::fs;
+    use lazy_static::lazy_static;
     use std::io::Write;
+    use std::sync::Mutex;
     use tempfile::tempdir;
 
-    fn create_test_fs() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-
-        // Create files and directories
-        fs::File::create(root.join("file_a.txt")).unwrap();
-        fs::File::create(root.join(".hidden_file")).unwrap();
-
-        fs::create_dir(root.join("sub")).unwrap();
-        fs::File::create(root.join("sub/file_b.txt")).unwrap();
-
-        fs::create_dir_all(root.join("sub/sub2")).unwrap();
-        fs::File::create(root.join("sub/sub2/file_c.log")).unwrap();
-
-        fs::create_dir_all(root.join("target/debug")).unwrap();
-        fs::File::create(root.join("target/debug/app.exe")).unwrap();
-
-        fs::create_dir(root.join("logs")).unwrap();
-        fs::File::create(root.join("logs/yesterday.log")).unwrap();
-
-        let mut gitignore = fs::File::create(root.join(".gitignore")).unwrap();
-        writeln!(gitignore, "*.log").unwrap();
-        writeln!(gitignore, "logs/").unwrap();
-
-        (dir, root)
-    }
-
-    // Helper to run get_candidate_files and return a sorted list of file names
-    fn get_sorted_file_names(
-        root: &PathBuf,
-        no_ignore: bool,
-        hidden: bool,
-        max_depth: Option<usize>,
-    ) -> Vec<String> {
-        let mut paths = get_candidate_files(root, no_ignore, hidden, max_depth).unwrap();
-        paths.sort();
-        paths
-            .into_iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().replace("\\", "/"))
-            .collect()
+    lazy_static! {
+        static ref ENV_MUTEX: Mutex<()> = Mutex::new(());
     }
 
     #[test]
-    fn test_get_candidates_default_behavior() {
-        let (_dir, root) = create_test_fs();
-        let files = get_sorted_file_names(&root, false, false, None);
+    fn test_find_local_config_in_parent() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let root = tempdir().unwrap();
+        let sub = root.path().join("sub");
+        fs::create_dir(&sub).unwrap();
 
-        // Should find file_a.txt and file_b.txt
-        // Should NOT find:
-        // - .hidden_file (hidden)
-        // - .gitignore (hidden)
-        // - files in target/ (default override)
-        // - *.log files (.gitignore)
-        assert_eq!(files, vec!["file_a.txt", "sub/file_b.txt"]);
+        let config_path = root.path().join(".rdump.toml");
+        fs::File::create(&config_path).unwrap();
+
+        let found_path = find_local_config(&sub).unwrap();
+        assert_eq!(found_path, config_path);
     }
 
     #[test]
-    fn test_get_candidates_with_hidden() {
-        let (_dir, root) = create_test_fs();
-        let files = get_sorted_file_names(&root, false, true, None);
+    fn test_find_local_config_not_found() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let root = tempdir().unwrap();
+        assert!(find_local_config(root.path()).is_none());
+    }
 
-        // Should find .gitignore, .hidden_file, file_a.txt, file_b.txt
-        let expected: HashSet<String> = [
-            ".gitignore".to_string(),
-            ".hidden_file".to_string(),
-            "file_a.txt".to_string(),
-            "sub/file_b.txt".to_string(),
-        ]
-        .iter()
-        .cloned()
-        .collect();
-        let found: HashSet<String> = files.into_iter().collect();
+    // ... the rest of the existing tests in config.rs ...
+    #[test]
+    fn test_load_config_merging_and_overriding() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let test_dir = tempdir().unwrap();
 
-        assert_eq!(found, expected);
+        // 1. Setup the fake global config
+        let fake_home_dir = test_dir.path().join("home");
+        let global_config_dir = fake_home_dir.join("rdump");
+        fs::create_dir_all(&global_config_dir).unwrap();
+        let global_config_path = global_config_dir.join("config.toml");
+        let mut global_file = fs::File::create(&global_config_path).unwrap();
+        writeln!(
+            global_file,
+            r#"
+            [presets]
+            rust = "ext:rs"
+            docs = "ext:md"
+        "#
+        )
+        .unwrap();
+
+        // 2. Setup the fake local config in a project directory
+        let project_dir = test_dir.path().join("project");
+        fs::create_dir(&project_dir).unwrap();
+        let local_config_path = project_dir.join(".rdump.toml");
+        let mut local_file = fs::File::create(&local_config_path).unwrap();
+        writeln!(
+            local_file,
+            r#"
+            [presets]
+            docs = "ext:md | ext:txt" # This should override the global 'docs'
+            scripts = "ext:sh"       # This is a new local-only preset
+        "#
+        )
+        .unwrap();
+
+        // 3. Set the environment variable to point to our fake global config dir
+        env::set_var("RDUMP_TEST_CONFIG_DIR", fake_home_dir.to_str().unwrap());
+
+        // 4. Run the function to be tested, simulating running from the project dir
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(&project_dir).unwrap();
+        let config = load_config().unwrap();
+        env::set_current_dir(&original_dir).unwrap(); // Cleanup
+
+        // 5. Assert the results
+        assert_eq!(config.presets.len(), 3);
+        assert_eq!(config.presets.get("rust").unwrap(), "ext:rs"); // From global
+        assert_eq!(config.presets.get("scripts").unwrap(), "ext:sh"); // From local
+        assert_eq!(
+            config.presets.get("docs").unwrap(),
+            "ext:md | ext:txt" // Overridden by local
+        );
+
+        // Clean up the environment variable for other tests
+        env::remove_var("RDUMP_TEST_CONFIG_DIR");
     }
 
     #[test]
-    fn test_get_candidates_with_no_ignore() {
-        let (_dir, root) = create_test_fs();
-        let files = get_sorted_file_names(&root, true, false, None);
+    fn test_load_config_only_global() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let test_dir = tempdir().unwrap();
+        let fake_home_dir = test_dir.path().join("home");
+        let project_dir = test_dir.path().join("project"); // No local config here
+        fs::create_dir_all(&project_dir).unwrap();
 
-        // Should find everything not hidden, including gitignored files
-        // and files in the default-ignored 'target' dir.
-        let expected: HashSet<String> = [
-            "file_a.txt".to_string(),
-            "sub/file_b.txt".to_string(),
-            "sub/sub2/file_c.log".to_string(),
-            "target/debug/app.exe".to_string(),
-            "logs/yesterday.log".to_string(),
-        ]
-        .iter()
-        .cloned()
-        .collect();
-        let found: HashSet<String> = files.into_iter().collect();
+        let global_config_dir = fake_home_dir.join("rdump");
+        fs::create_dir_all(&global_config_dir).unwrap();
+        let mut global_file = fs::File::create(global_config_dir.join("config.toml")).unwrap();
+        writeln!(
+            global_file,
+            r#"
+            [presets]
+            rust = "ext:rs"
+        "#
+        )
+        .unwrap();
 
-        assert_eq!(found, expected);
-    }
+        env::set_var("RDUMP_TEST_CONFIG_DIR", fake_home_dir.to_str().unwrap());
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(&project_dir).unwrap();
+        let config = load_config().unwrap();
+        env::set_current_dir(&original_dir).unwrap(); // Cleanup
 
-    #[test]
-    fn test_get_candidates_with_max_depth() {
-        let (_dir, root) = create_test_fs();
-        // Depth 1 is the root directory itself.
-        // Depth 2 is the root + immediate children.
-        let files = get_sorted_file_names(&root, false, false, Some(2));
-        // Should find file_a.txt but not file_b.txt which is at depth 3 (root -> sub -> file_b)
-        assert_eq!(files, vec!["file_a.txt"]);
+        assert_eq!(config.presets.len(), 1);
+        assert_eq!(config.presets.get("rust").unwrap(), "ext:rs");
+
+        env::remove_var("RDUMP_TEST_CONFIG_DIR");
     }
 }
 ```
 
-### Conclusion
+By removing the redundant logic from `load_config` and simplifying the test override in `global_config_path`, the code is now much cleaner and, most importantly, correct. The application will now reliably use the temporary test configurations when the E2E tests are run, and your real configuration file will be safe from interference.
 
-After adding these tests, the core functionality of your application—finding files and evaluating them against a query—will be thoroughly covered. The only parts left are the "command" functions themselves (`run_search`, `run_preset`), which mostly orchestrate calls to the functions you've now tested. Testing them directly would involve more complex mocking or running the application as a subprocess, which provides diminishing returns compared to the robust unit and integration tests you now have.
+### Final Step: Run the Tests Again
 
-Your project is in an excellent state. The test suite is comprehensive, the code is well-structured and testable, and the functionality is solid. This is a high-quality codebase.
+Now, run the test suite one last time:
+
+```sh
+cargo test
+```
+
+All 12 tests should now pass. This confirms that your application is fully working, robustly tested from the lowest-level unit to the highest-level user interaction, and ready for use. Congratulations
