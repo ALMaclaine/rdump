@@ -428,4 +428,45 @@ def process_data():
         let mut ctx = FileContext::new(file_path.clone());
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Str, "https://api.example.com").unwrap().is_match());
     }
+
+   #[test]
+   fn test_code_aware_evaluator_go_suite() {
+       let go_code = r#"
+           package main
+
+           import "fmt"
+
+           // User represents a user
+           type User struct {
+               ID int
+           }
+
+           func (u *User) Greet() {
+               fmt.Println("Hello")
+           }
+
+           func main() {
+               user := User{ID: 1}
+               user.Greet()
+           }
+       "#;
+
+       let temp_dir = tempfile::tempdir().unwrap();
+       let file_path = temp_dir.path().join("main.go");
+       let mut file = std::fs::File::create(&file_path).unwrap();
+       file.write_all(go_code.as_bytes()).unwrap();
+
+       let evaluator = CodeAwareEvaluator;
+
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Struct, "User").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "Greet").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Call, "Println").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fmt").unwrap().is_match());
+       let mut ctx = FileContext::new(file_path.clone());
+       assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Comment, "represents a user").unwrap().is_match());
+   }
 }

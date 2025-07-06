@@ -118,5 +118,30 @@ export function createLog(message: string): ILog {
         .write_all(ts_content.as_bytes())
         .unwrap();
 
+   // --- NEW: Add a Go file ---
+   let go_content = r#"
+package main
+
+import "fmt"
+
+// Server represents our HTTP server.
+type Server struct {
+	Address string
+}
+
+func NewServer(addr string) *Server {
+	return &Server{Address: addr}
+}
+
+func main() {
+	server := NewServer(":8080")
+	fmt.Println(server.Address)
+}
+"#;
+   fs::File::create(src_dir.join("main.go"))
+       .unwrap()
+       .write_all(go_content.as_bytes())
+       .unwrap();
+
     dir
 }
