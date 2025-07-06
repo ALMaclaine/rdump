@@ -77,8 +77,18 @@ pub enum LogicalOperator {
 }
 
 pub fn parse_query(query: &str) -> Result<AstNode> {
-    let pairs = RqlParser::parse(Rule::query, query)?;
-    build_ast_from_pairs(pairs.peek().unwrap())
+   // Check for empty or whitespace-only queries BEFORE parsing.
+   if query.trim().is_empty() {
+       return Err(anyhow!("Query cannot be empty."));
+   }
+
+   match RqlParser::parse(Rule::query, query) {
+       Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
+       Err(e) => {
+           // Re-format the pest error to be more user-friendly.
+           Err(anyhow!("Invalid query syntax:\n{}", e))
+       }
+   }
 }
 
 fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
@@ -241,5 +251,39 @@ mod tests {
        assert_eq!(parse_query("struct:Bar").unwrap(), *predicate(PredicateKey::Struct, "Bar"));
        assert_eq!(parse_query("comment:TODO").unwrap(), *predicate(PredicateKey::Comment, "TODO"));
        assert_eq!(parse_query("str:'api_key'").unwrap(), *predicate(PredicateKey::Str, "api_key"));
+   }
+
+   #[test]
+   fn test_error_on_trailing_operator() {
+       let result = parse_query("ext:rs &");
+       let err = result.unwrap_err();
+       assert!(err.to_string().contains("Invalid query syntax:"));
+       assert!(err.to_string().contains("expected")); // Pest's pointer is still useful
+   }
+
+   #[test]
+   fn test_error_on_missing_value() {
+       let result = parse_query("ext:");
+       let err = result.unwrap_err();
+       assert!(err.to_string().contains("Invalid query syntax:"));
+   }
+
+   #[test]
+   fn test_error_on_unclosed_parenthesis() {
+       let result = parse_query("(ext:rs | path:src");
+       let err = result.unwrap_err();
+       assert!(err.to_string().contains("Invalid query syntax:"));
+   }
+
+   #[test]
+   fn test_error_on_empty_query() {
+       let result = parse_query("");
+       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
+   }
+
+   #[test]
+   fn test_error_on_whitespace_query() {
+       let result = parse_query("   ");
+       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
    }
 }

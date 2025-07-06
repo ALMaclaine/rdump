@@ -1,136 +1,185 @@
-Understood. Let's implement the "sane default" ignores.
+Of course. This is the final and crucial step in our "Polish & Release" roadmap: improving the user experience when they make a mistake. A great tool not only works well but also fails gracefully and provides helpful feedback.
 
-This change is focused entirely on `rdump/src/commands/search.rs`. I will add the logic to create an in-memory ignore file and apply it to the `WalkBuilder`, and then add a new test to verify this default behavior.
+The following changes will be entirely localized to `rdump/src/parser.rs`. I will update the `parse_query` function to catch the raw `pest` error and reformat it into a much more user-friendly message. I will also update the existing error-related tests to assert that these new, cleaner messages are being produced.
 
 ---
 
-### **`rdump/src/commands/search.rs` (Modified)**
+### **`rdump/src/parser.rs` (Modified)**
 
-I've updated `get_candidate_files` to add the default ignore patterns. I'm using `WalkBuilder::add_ignore` with a `tempfile` to create a temporary, in-memory ignore file. This is a clean and robust way to inject our default rules into the `ignore` crate's logic.
-
-I have also added a new test, `test_get_candidates_ignores_node_modules_by_default`, to specifically validate this new behavior.
+The core change is in the `parse_query` function. Instead of simply mapping the error, it now catches it and wraps it in a more helpful `anyhow!` message. The unit tests are also updated to check the content of the error message, making them more robust.
 
 ```diff
-// START rdump/src/commands/search.rs
+// START rdump/src/parser.rs
 
-use crate::{config, ColorChoice, SearchArgs};
-use anyhow::anyhow;
-use anyhow::Result;
-use atty::Stream;
--use ignore::WalkBuilder;
-+use ignore::{WalkBuilder, DirEntry};
-use rayon::prelude::*;
-use std::fs::File;
- use std::io::{self, Write};
- use std::path::PathBuf;
-+use tempfile::NamedTempFile;
+use anyhow::{anyhow, Result};
+use pest::iterators::Pair;
+use pest::Parser;
+use pest_derive::Parser;
 
- use crate::evaluator::{Evaluator, FileContext};
- use crate::formatter;
-// ... (run_search function is unchanged)
-// ...
+#[derive(Parser)]
+#[grammar = "rql.pest"]
+pub struct RqlParser;
 
-/// Walks the directory, respecting .gitignore, and applies our own smart defaults.
-fn get_candidate_files(
-    root: &PathBuf,
-    no_ignore: bool,
-    hidden: bool,
-    max_depth: Option<usize>,
-) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    let mut walker_builder = WalkBuilder::new(root);
-
-    walker_builder
-        .ignore(!no_ignore)
-        .git_global(!no_ignore)
-        .git_ignore(!no_ignore)
-        .hidden(!hidden)
-        .max_depth(max_depth);
-
-    // Add our own sane defaults for ignored directories, unless --no-ignore is passed.
-    if !no_ignore {
-+       // Create an in-memory temporary file with our default ignore patterns.
-+       let mut temp_ignore = NamedTempFile::new()?;
-+       writeln!(temp_ignore, "node_modules/")?;
-+       writeln!(temp_ignore, "target/")?;
-+       writeln!(temp_ignore, "dist/")?;
-+       writeln!(temp_ignore, "build/")?;
-+       writeln!(temp_ignore, ".git/")?;
-+       writeln!(temp_ignore, ".svn/")?;
-+       writeln!(temp_ignore, ".hg/")?;
-+       writeln!(temp_ignore, "*.pyc")?;
-+       writeln!(temp_ignore, "__pycache__/")?;
-+
-+       // Add this temp file to the WalkBuilder's ignore list.
-+       walker_builder.add_ignore(temp_ignore.path());
-    }
-
-    // This closure will be used to filter entries.
-    let is_file = |entry: &DirEntry| -> bool {
-        entry.file_type().map_or(false, |ft| ft.is_file())
-    };
-
-    for result in walker_builder.build().filter_map(Result::ok) {
-        if is_file(&result) {
-            files.push(result.into_path());
-        }
-    }
-    Ok(files)
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub enum PredicateKey {
+    Ext,
+    Name,
+    Path,
+    Contains,
+    Matches,
+    Size,
+    Modified,
+    // --- SEMANTIC PREDICATES ---
+    // Generic
+    Def,
+    Func,
+    Import,
+    // Granular Definitions
+    Class,
+    Struct,
+    Enum,
+    Interface,
+    Trait,
+    Type,
+    // Syntactic Content
+    Comment,
+    Str,
+    // A key for testing or unknown predicates
+    Other(String),
 }
 
-// Add to the bottom of rdump/src/commands/search.rs
+impl From<&str> for PredicateKey {
+    fn from(s: &str) -> Self {
+        match s {
+            "ext" => Self::Ext,
+            "name" => Self::Name,
+            "path" => Self::Path,
+            "contains" => Self::Contains,
+            "matches" => Self::Matches,
+            "size" => Self::Size,
+            "modified" => Self::Modified,
+            // --- SEMANTIC ---
+            "def" => Self::Def,
+            "func" => Self::Func,
+            "import" => Self::Import,
+            "class" => Self::Class,
+            "struct" => Self::Struct,
+            "enum" => Self::Enum,
+            "interface" => Self::Interface,
+            "trait" => Self::Trait,
+            "type" => Self::Type,
+            "comment" => Self::Comment,
+            "str" => Self::Str,
+            // Any other key is captured here.
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum AstNode {
+    Predicate(PredicateKey, String),
+    LogicalOp(LogicalOperator, Box<AstNode>, Box<AstNode>),
+    Not(Box<AstNode>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum LogicalOperator {
+    And,
+    Or,
+}
+
+pub fn parse_query(query: &str) -> Result<AstNode> {
+-   let pairs = RqlParser::parse(Rule::query, query)?;
+-   build_ast_from_pairs(pairs.peek().unwrap())
++   // Check for empty or whitespace-only queries BEFORE parsing.
++   if query.trim().is_empty() {
++       return Err(anyhow!("Query cannot be empty."));
++   }
++
++   match RqlParser::parse(Rule::query, query) {
++       Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
++       Err(e) => {
++           // Re-format the pest error to be more user-friendly.
++           Err(anyhow!("Invalid query syntax:\n{}", e))
++       }
++   }
+}
+
+fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
+// ... (rest of parsing logic is unchanged) ...
+// ...
 
 #[cfg(test)]
 mod tests {
-// ... (existing tests are unchanged)
-// ...
+// ... (existing success tests are unchanged) ...
     use super::*;
-    use std::collections::HashSet;
-    use std::fs;
-    use std::io::Write;
-    use tempfile::tempdir;
 
-// ... (existing test functions)
+    // Helper to create a predicate node for cleaner tests.
+    fn predicate(key: PredicateKey, value: &str) -> Box<AstNode> {
+        Box::new(AstNode::Predicate(key, value.to_string()))
+    }
+// ...
+    #[test]
+    fn test_parse_semantic_predicates() {
+        let ast_def = parse_query("def:User").unwrap();
+        assert_eq!(ast_def, *predicate(PredicateKey::Def, "User"));
+
+        let ast_func = parse_query("func:get_user").unwrap();
+        assert_eq!(ast_func, *predicate(PredicateKey::Func, "get_user"));
+
+        let ast_import = parse_query("import:serde").unwrap();
+        assert_eq!(ast_import, *predicate(PredicateKey::Import, "serde"));
+    }
 
     #[test]
-    fn test_get_candidates_with_max_depth() {
-        let (_dir, root) = create_test_fs();
-        // Depth 1 is the root directory itself.
-        // Depth 2 is the root + immediate children.
-        let files = get_sorted_file_names(&root, false, false, Some(2));
-        // Should find file_a.txt and file_b.txt which is at depth 2 (root -> sub -> file_b)
-        assert_eq!(files, vec!["file_a.txt", "sub/file_b.txt"]);
+    fn test_parse_granular_and_syntactic_predicates() {
+        assert_eq!(parse_query("class:Foo").unwrap(), *predicate(PredicateKey::Class, "Foo"));
+        assert_eq!(parse_query("struct:Bar").unwrap(), *predicate(PredicateKey::Struct, "Bar"));
+        assert_eq!(parse_query("comment:TODO").unwrap(), *predicate(PredicateKey::Comment, "TODO"));
+        assert_eq!(parse_query("str:'api_key'").unwrap(), *predicate(PredicateKey::Str, "api_key"));
     }
 
 +   #[test]
-+   fn test_get_candidates_ignores_node_modules_by_default() {
-+       // Setup a directory with node_modules but NO .gitignore
-+       let dir = tempdir().unwrap();
-+       let root = dir.path().to_path_buf();
-+       fs::File::create(root.join("app.js")).unwrap();
-+       fs::create_dir_all(root.join("node_modules/express")).unwrap();
-+       fs::File::create(root.join("node_modules/express/index.js")).unwrap();
++   fn test_error_on_trailing_operator() {
++       let result = parse_query("ext:rs &");
++       let err = result.unwrap_err();
++       assert!(err.to_string().contains("Invalid query syntax:"));
++       assert!(err.to_string().contains("expected")); // Pest's pointer is still useful
++   }
 +
-+       // Default behavior: should ignore node_modules
-+       let files_default = get_sorted_file_names(&root, false, false, None);
-+       assert_eq!(files_default, vec!["app.js"]);
++   #[test]
++   fn test_error_on_missing_value() {
++       let result = parse_query("ext:");
++       let err = result.unwrap_err();
++       assert!(err.to_string().contains("Invalid query syntax:"));
++   }
 +
-+       // With --no-ignore: should find files inside node_modules
-+       let files_no_ignore = get_sorted_file_names(&root, true, false, None);
-+       let expected: HashSet<String> = [
-+           "app.js".to_string(),
-+           "node_modules/express/index.js".to_string(),
-+       ]
-+       .iter()
-+       .cloned()
-+       .collect();
-+       let found: HashSet<String> = files_no_ignore.into_iter().collect();
-+       assert_eq!(found, expected);
++   #[test]
++   fn test_error_on_unclosed_parenthesis() {
++       let result = parse_gquery("(ext:rs | path:src");
++       let err = result.unwrap_err();
++       assert!(err.to_string().contains("Invalid query syntax:"));
++   }
++
++   #[test]
++   fn test_error_on_empty_query() {
++       let result = parse_query("");
++       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
++   }
++
++   #[test]
++   fn test_error_on_whitespace_query() {
++       let result = parse_query("   ");
++       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
 +   }
 }
-// END rdump/src/commands/search.rs
+// END rdump/src/parser.rs
 ```
 
-This completes the implementation of our default ignore list. The tool now behaves much more intelligently out-of-the-box, providing a cleaner and faster experience for all users.
+This completes the "Polish & Release" roadmap. We have:
+1.  **Optimized** the core evaluation loop for performance.
+2.  **Improved** usability by adding sane default ignore patterns.
+3.  **Polished** the user experience by providing clear, helpful error messages for invalid queries.
 
-The final item on our "Polish & Release" roadmap is to improve our error handling, specifically for query syntax errors. This will be the last step before `rdump` is ready for a `v1.0.0` release.
+The tool is now fast, intelligent, robust, and user-friendly. It is officially ready for a `v1.0.0` release. Congratulations on building a truly exceptional developer tool.
