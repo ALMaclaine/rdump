@@ -43,8 +43,9 @@ pub fn load_config() -> Result<Config> {
     // 1. Load the global config file, if it exists.
     if let Some(global_config_path) = global_config_path() {
         if global_config_path.exists() {
-            let global_config_str = fs::read_to_string(&global_config_path)
-                .with_context(|| format!("Failed to read global config at {:?}", global_config_path))?;
+            let global_config_str = fs::read_to_string(&global_config_path).with_context(|| {
+                format!("Failed to read global config at {:?}", global_config_path)
+            })?;
             let global_config: Config = toml::from_str(&global_config_str)?;
             final_config.presets.extend(global_config.presets);
         }
@@ -54,8 +55,9 @@ pub fn load_config() -> Result<Config> {
     let current_dir = env::current_dir()?;
     if let Some(local_config_path) = find_local_config(&current_dir) {
         if local_config_path.exists() {
-            let local_config_str = fs::read_to_string(&local_config_path)
-                .with_context(|| format!("Failed to read local config at {:?}", local_config_path))?;
+            let local_config_str = fs::read_to_string(&local_config_path).with_context(|| {
+                format!("Failed to read local config at {:?}", local_config_path)
+            })?;
             let local_config: Config = toml::from_str(&local_config_str)?;
             final_config.presets.extend(local_config.presets);
         }
@@ -66,7 +68,8 @@ pub fn load_config() -> Result<Config> {
 
 /// Saves the given config to the global configuration file.
 pub fn save_config(config: &Config) -> Result<()> {
-    let path = global_config_path().ok_or_else(|| anyhow::anyhow!("Could not determine global config path"))?;
+    let path = global_config_path()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine global config path"))?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -132,7 +135,8 @@ mod tests {
             rust = "ext:rs"
             docs = "ext:md"
         "#
-        ).unwrap();
+        )
+        .unwrap();
 
         let project_dir = test_dir.path().join("project");
         fs::create_dir(&project_dir).unwrap();
@@ -145,7 +149,8 @@ mod tests {
             docs = "ext:md | ext:txt"
             scripts = "ext:sh"
         "#
-        ).unwrap();
+        )
+        .unwrap();
 
         env::set_var("RDUMP_TEST_CONFIG_DIR", fake_home_dir.to_str().unwrap());
         let original_dir = env::current_dir().unwrap();

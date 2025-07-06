@@ -16,7 +16,10 @@ use commands::{preset::run_preset, search::run_search};
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
 #[derive(Parser, Debug)]
-#[command(version, about = "A fast, expressive, code-aware tool to find and dump file contents.")]
+#[command(
+    version,
+    about = "A fast, expressive, code-aware tool to find and dump file contents."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

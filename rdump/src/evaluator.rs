@@ -1,4 +1,4 @@
-use anyhow::{Result, Context, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -18,7 +18,11 @@ pub struct FileContext {
 
 impl FileContext {
     pub fn new(path: PathBuf) -> Self {
-        FileContext { path, content: None, tree: None }
+        FileContext {
+            path,
+            content: None,
+            tree: None,
+        }
     }
 
     pub fn get_content(&mut self) -> Result<&str> {
@@ -36,9 +40,15 @@ impl FileContext {
             let path_display = self.path.display().to_string();
             let content = self.get_content()?;
             let mut parser = TreeSitterParser::new();
-            parser.set_language(&language)
-                .with_context(|| format!("Failed to set language for tree-sitter parser on {}", path_display))?;
-            let tree = parser.parse(content, None).ok_or_else(|| anyhow!("Tree-sitter failed to parse {}", path_display))?;
+            parser.set_language(&language).with_context(|| {
+                format!(
+                    "Failed to set language for tree-sitter parser on {}",
+                    path_display
+                )
+            })?;
+            let tree = parser
+                .parse(content, None)
+                .ok_or_else(|| anyhow!("Tree-sitter failed to parse {}", path_display))?;
             self.tree = Some(tree);
         }
         Ok(self.tree.as_ref().unwrap())
@@ -101,7 +111,7 @@ impl Evaluator {
         value: &str,
         context: &mut FileContext,
     ) -> Result<bool> {
-        if let Some(evaluator) = self.registry.get(key) {            
+        if let Some(evaluator) = self.registry.get(key) {
             evaluator.evaluate(context, key, value)
         } else {
             // Handle unknown or unimplemented predicates gracefully.
@@ -114,8 +124,8 @@ impl Evaluator {
 mod tests {
     use super::*;
     use crate::parser::parse_query;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();

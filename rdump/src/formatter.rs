@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local}; // For formatting timestamps
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt; // For Unix permissions
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt; // For Unix permissions
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 // We need to pass the format enum from main.rs
 use crate::Format;
@@ -58,8 +58,9 @@ pub fn print_output(
         }
         Format::Cat => {
             for path in matching_files {
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
+                let content = fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read file for final output: {}", path.display())
+                })?;
                 if with_line_numbers {
                     for (i, line) in content.lines().enumerate() {
                         writeln!(writer, "{:>5} | {}", i + 1, line)?;
@@ -72,8 +73,9 @@ pub fn print_output(
         Format::Json => {
             let mut outputs = Vec::new();
             for path in matching_files {
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
+                let content = fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read file for final output: {}", path.display())
+                })?;
                 outputs.push(FileOutput {
                     path: path.to_string_lossy().to_string(),
                     content,
@@ -89,8 +91,9 @@ pub fn print_output(
                 }
                 writeln!(writer, "File: {}", path.display())?;
                 writeln!(writer, "---")?;
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
+                let content = fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read file for final output: {}", path.display())
+                })?;
 
                 if with_line_numbers {
                     for (i, line) in content.lines().enumerate() {
@@ -117,12 +120,20 @@ fn format_mode(mode: u32) -> String {
         let other_r = if mode & 0o004 != 0 { 'r' } else { '-' };
         let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
         let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
-        format!("-{}{}{}{}{}{}{}{}{}", user_r, user_w, user_x, group_r, group_w, group_x, other_r, other_w, other_x)
+        format!(
+            "-{}{}{}{}{}{}{}{}{}",
+            user_r, user_w, user_x, group_r, group_w, group_x, other_r, other_w, other_x
+        )
     }
     #[cfg(not(unix))]
     {
         // Basic fallback for non-Unix platforms
-        if mode & 0o200 != 0 { "-rw-------" } else { "-r--------" }.to_string()
+        if mode & 0o200 != 0 {
+            "-rw-------"
+        } else {
+            "-r--------"
+        }
+        .to_string()
     }
 }
 
@@ -142,12 +153,11 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     fn create_temp_file_with_content(content: &str) -> NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().unwrap();

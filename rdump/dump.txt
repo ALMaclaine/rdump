@@ -23,6 +23,9 @@ chrono = { version = "0.4", features = ["serde"] }
 lazy_static = "1.4.0"
 tree-sitter = "0.22.6"
 tree-sitter-rust = "0.21.0"
+tree-sitter-python = "0.21.0"
+tree-sitter-javascript = "0.21.0"
+tree-sitter-typescript = "0.21.0"
 
 [dev-dependencies]
 assert_cmd = "2.0.14"
@@ -926,7 +929,7 @@ mod config;
 mod evaluator;
 mod formatter;
 mod parser;
-mod predicates; // <-- NEW
+mod predicates;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -938,7 +941,7 @@ use commands::{preset::run_preset, search::run_search};
 // These structs and enums define the public API of our CLI.
 // They need to be public so the `commands` modules can use them.
 #[derive(Parser, Debug)]
-#[command(version, about = "A fast, expressive tool to find and dump file contents.")]
+#[command(version, about = "A fast, expressive, code-aware tool to find and dump file contents.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -956,7 +959,27 @@ pub enum Commands {
 
 #[derive(Parser, Debug, Clone)]
 pub struct SearchArgs {
-    #[arg()]
+    /// The query string to search for, using rdump Query Language (RQL).
+    ///
+    /// RQL supports logical operators (&, |, !), parentheses, and key:value predicates.
+    /// Values with spaces must be quoted (e.g., contains:'fn main').
+    ///
+    /// METADATA PREDICATES:
+    ///   ext:<str>          - File extension (e.g., "rs", "toml")
+    ///   name:<glob>        - File name glob pattern (e.g., "test_*.rs")
+    ///   path:<str>         - Substring in the full file path
+    ///   size:[>|<]<num>[kb|mb] - File size (e.g., ">10kb")
+    ///   modified:[>|<]<num>[h|d|w] - Modified time (e.g., "<2d")
+    ///
+    /// CONTENT PREDICATES:
+    ///   contains:<str>     - Literal string a file contains
+    ///   matches:<regex>    - Regular expression a file's content matches
+    ///
+    /// CODE-AWARE PREDICATES (for Rust, Python):
+    ///   def:<str>          - A definition (class, struct, enum, trait)
+    ///   func:<str>         - A function or method definition
+    ///   import:<str>       - An import or use statement
+    #[arg(verbatim_doc_comment)]
     pub query: Option<String>,
     #[arg(long, short)]
     pub preset: Vec<String>,
@@ -979,7 +1002,7 @@ pub struct SearchArgs {
 
     /// List files with metadata instead of dumping content.
     #[arg(long)]
-    pub find: bool, // <-- NEW
+    pub find: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -1012,7 +1035,7 @@ pub enum Format {
     Json,
     Paths,
     Cat,
-    Find, // <-- NEW
+    Find,
 }
 
 /// The main entry point.
@@ -1026,7 +1049,6 @@ fn main() -> Result<()> {
             if args.no_headers {
                 args.format = Format::Cat;
             }
-            // NEW: Handle `--find` shorthand
             if args.find {
                 args.format = Format::Find;
             }
@@ -1035,7 +1057,6 @@ fn main() -> Result<()> {
         Commands::Preset(args) => run_preset(args.action.clone()),
     }
 }
-
 
 // END rdump/src/main.rs
 
@@ -1284,19 +1305,6 @@ struct LanguageProfile {
     queries: HashMap<PredicateKey, String>,
 }
 
-// A static registry of language profiles, loaded at compile time.
-lazy_static! {
-    static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
-        let mut m = HashMap::new();
-        // Phase 2.0: Only Rust is implemented.
-        m.insert("rs", create_rust_profile());
-        // In the future, we will add:
-        // m.insert("py", create_python_profile());
-        // m.insert("js", create_javascript_profile());
-        m
-    };
-}
-
 /// Creates the profile for the Rust language.
 fn create_rust_profile() -> LanguageProfile {
     let language = tree_sitter_rust::language();
@@ -1334,11 +1342,93 @@ fn create_rust_profile() -> LanguageProfile {
     );
 
     LanguageProfile { language, queries }
+ }
+
+/// Creates the profile for the Python language.
+fn create_python_profile() -> LanguageProfile {
+    let language = tree_sitter_python::language();
+    let mut queries = HashMap::new();
+
+    // Query for class definitions.
+    queries.insert(
+        PredicateKey::Def,
+        "
+        (class_definition name: (identifier) @match)
+        "
+        .to_string(),
+    );
+
+    // Query for function definitions.
+    queries.insert(
+        PredicateKey::Func,
+        "
+        (function_definition name: (identifier) @match)
+        "
+        .to_string(),
+    );
+
+    // Query for `import` and `from ... import` statements.
+    queries.insert(
+        PredicateKey::Import,
+        "
+        [
+            (import_statement) @match
+            (import_from_statement) @match
+        ]
+        "
+        .to_string(),
+    );
+
+    LanguageProfile { language, queries }
 }
 
-/// The evaluator that uses tree-sitter to perform code-aware queries.
-#[derive(Debug)]
-pub struct CodeAwareEvaluator;
+/// Creates the profile for the JavaScript language.
+fn create_javascript_profile() -> LanguageProfile {
+    let language = tree_sitter_javascript::language();
+    let mut queries = HashMap::new();
+
+    queries.insert(PredicateKey::Def, "(class_declaration name: (identifier) @match)".to_string());
+    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
+
+    LanguageProfile { language, queries }
+}
+
+/// Creates the profile for the TypeScript language.
+fn create_typescript_profile() -> LanguageProfile {
+    let language = tree_sitter_typescript::language_typescript();
+    let mut queries = HashMap::new();
+
+    queries.insert(PredicateKey::Def, "[ (class_declaration name: (type_identifier) @match) (interface_declaration name: (type_identifier) @match) (type_alias_declaration name: (type_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Func, "[ (function_declaration name: (identifier) @match) (method_definition name: (property_identifier) @match) ]".to_string());
+    queries.insert(PredicateKey::Import, "(import_statement) @match".to_string());
+
+    LanguageProfile { language, queries }
+}
+
+// A static registry of language profiles, loaded at compile time.
+lazy_static! {
+    static ref LANGUAGE_PROFILES: HashMap<&'static str, LanguageProfile> = {
+        let mut m = HashMap::new();
+        // Phase 2.0: Only Rust is implemented.
+         m.insert("rs", create_rust_profile());
+        // Phase 2.1: Add Python support.
+        m.insert("py", create_python_profile());
+        // Phase 2.2: Add JS/TS support
+        let ts_profile = create_typescript_profile();
+        m.insert("ts", ts_profile);
+        m.insert("tsx", create_typescript_profile()); // Reuse TS profile for TSX
+
+        let js_profile = create_javascript_profile();
+        m.insert("js", js_profile);
+        m.insert("jsx", create_javascript_profile()); // Reuse JS profile for JSX
+         m
+     };
+ }
+
+ /// The evaluator that uses tree-sitter to perform code-aware queries.
+ #[derive(Debug)]
+ pub struct CodeAwareEvaluator;
 
 impl PredicateEvaluator for CodeAwareEvaluator {
     fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<bool> {
@@ -1360,7 +1450,7 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
         let tree = context.get_tree(profile.language.clone())?;
 
-        // 4. Compile the tree-sitter query.
+         // 4. Compile the tree-sitter query.
         let query = Query::new(&profile.language, ts_query_str)
             .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
         let mut cursor = QueryCursor::new();
@@ -1393,6 +1483,7 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         Ok(false)
     }
 }
+
 
 // END rdump/src/predicates/code_aware.rs
 
@@ -1556,7 +1647,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
-    fn create_temp_file(content: &str) -> NamedTempFile {
+     fn create_temp_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
         write!(file, "{}", content).unwrap();
         file
@@ -1697,9 +1788,113 @@ mod tests {
         let mut ctx = FileContext::new(file_path.clone());
         assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "Serialize").unwrap(), "Should match item in a use list");
         let mut ctx = FileContext::new(file_path.clone());
-        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "anyhow").unwrap());
+         assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "anyhow").unwrap());
+     }
+
+    #[test]
+    fn test_code_aware_evaluator_python_suite() {
+        let python_code = r#"
+import os
+from sys import argv
+
+class DataProcessor:
+    def __init__(self):
+        pass
+
+def process_data():
+    print("Processing")
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("script.py");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(python_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        // --- Test Definitions (Classes) ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "DataProcessor").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Def, "process_data").unwrap());
+
+        // --- Test Functions ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "process_data").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Func, "DataProcessor").unwrap());
+
+        // --- Test Imports ---
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "os").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "sys").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "argv").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(!evaluator.evaluate(&mut ctx, &PredicateKey::Import, "numpy").unwrap());
+     }
+
+    #[test]
+    fn test_code_aware_evaluator_javascript_suite() {
+        let js_code = r#"
+            import { open } from 'fs/promises';
+
+            class Logger {
+                log(message) { console.log(message); }
+            }
+
+            function a() { }
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("script.js");
+        file_path.parent().unwrap().to_path_buf().push("script.js");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(js_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "Logger").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "log").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "fs/promises").unwrap());
     }
-}
+
+    #[test]
+    fn test_code_aware_evaluator_typescript_suite() {
+        let ts_code = r#"
+            import React from 'react';
+
+            interface User { id: number; }
+            type ID = string | number;
+
+            class ApiClient {
+                fetchUser(): User | null { return null; }
+            }
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("api.ts");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(ts_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "User").unwrap(), "Should find interface");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ID").unwrap(), "Should find type alias");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Def, "ApiClient").unwrap(), "Should find class");
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Func, "fetchUser").unwrap());
+        let mut ctx = FileContext::new(file_path.clone());
+        assert!(evaluator.evaluate(&mut ctx, &PredicateKey::Import, "React").unwrap());
+    }
+ }
 
 // END rdump/src/predicates/mod.rs
 

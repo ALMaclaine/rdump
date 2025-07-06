@@ -1,7 +1,7 @@
-use anyhow::{anyhow, Result};
-use std::fs;
 use crate::config::{self, Config};
-use crate::PresetAction; // We'll need to make PresetAction public
+use crate::PresetAction;
+use anyhow::{anyhow, Result};
+use std::fs; // We'll need to make PresetAction public
 
 /// The main entry point for the `preset` command.
 pub fn run_preset(action: PresetAction) -> Result<()> {
@@ -38,7 +38,9 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
                 .ok_or_else(|| anyhow!("Could not determine global config path"))?;
 
             if !path.exists() {
-                return Err(anyhow!("Global config file does not exist. No presets to remove."));
+                return Err(anyhow!(
+                    "Global config file does not exist. No presets to remove."
+                ));
             }
 
             let mut config: Config = toml::from_str(&fs::read_to_string(&path)?)?;

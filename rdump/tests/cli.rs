@@ -39,7 +39,9 @@ fn test_help_message() -> Result<(), Box<dyn std::error::Error>> {
     cmd.arg("--help");
     cmd.assert()
         .success()
-        .stdout(predicate::str::contains("A fast, expressive, code-aware tool"))
+        .stdout(predicate::str::contains(
+            "A fast, expressive, code-aware tool",
+        ))
         .stdout(predicate::str::contains("Usage: rdump <COMMAND>"))
         .stdout(predicate::str::contains("Commands:\n  search"))
         .stdout(predicate::str::contains("  preset"))
@@ -93,9 +95,7 @@ fn test_search_no_results() -> Result<(), Box<dyn std::error::Error>> {
     cmd.current_dir(&root);
     cmd.arg("search").arg("ext:java"); // No java files exist
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::is_empty()); // Nothing should be printed
+    cmd.assert().success().stdout(predicate::str::is_empty()); // Nothing should be printed
     Ok(())
 }
 
@@ -170,7 +170,10 @@ fn test_file_discovery_flags() -> Result<(), Box<dyn std::error::Error>> {
     // Test --no-ignore flag
     let mut cmd_no_ignore = Command::cargo_bin("rdump")?;
     cmd_no_ignore.current_dir(&root);
-    cmd_no_ignore.arg("search").arg("--no-ignore").arg("ext:log");
+    cmd_no_ignore
+        .arg("search")
+        .arg("--no-ignore")
+        .arg("ext:log");
     cmd_no_ignore
         .assert()
         .success()
@@ -384,7 +387,10 @@ config = "ext:toml"
         .arg("rust")
         .arg("-p")
         .arg("config");
-    cmd_search3.assert().success().stdout(predicate::str::is_empty());
+    cmd_search3
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
 
     Ok(())
 }
@@ -436,7 +442,9 @@ fn test_preset_error_handling() -> Result<(), Box<dyn std::error::Error>> {
     cmd_remove
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Preset 'no-such-preset' not found"));
+        .stderr(predicate::str::contains(
+            "Preset 'no-such-preset' not found",
+        ));
 
     Ok(())
 }

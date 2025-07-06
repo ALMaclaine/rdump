@@ -67,9 +67,7 @@ pub fn parse_query(query: &str) -> Result<AstNode> {
 fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
     match pair.as_rule() {
         Rule::query => build_ast_from_pairs(pair.into_inner().next().unwrap()),
-        Rule::expression | Rule::logical_or | Rule::logical_and => {
-            build_ast_from_logical_op(pair)
-        }
+        Rule::expression | Rule::logical_or | Rule::logical_and => build_ast_from_logical_op(pair),
         Rule::term => {
             let mut inner = pair.into_inner();
             let first = inner.next().unwrap();
@@ -120,7 +118,6 @@ fn unescape_value(value: &str) -> String {
     }
     value.to_string()
 }
-
 
 #[cfg(test)]
 mod tests {

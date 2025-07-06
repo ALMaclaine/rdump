@@ -17,7 +17,9 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let mut final_query = args.query.take().unwrap_or_default();
 
     for preset_name in args.preset.iter().rev() {
-        let preset_query = config.presets.get(preset_name)
+        let preset_query = config
+            .presets
+            .get(preset_name)
             .ok_or_else(|| anyhow::anyhow!("Preset '{}' not found", preset_name))?;
 
         if final_query.is_empty() {
@@ -28,16 +30,14 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     }
 
     if final_query.is_empty() {
-        return Err(anyhow::anyhow!("Empty query. Provide a query string or use a preset."));
+        return Err(anyhow::anyhow!(
+            "Empty query. Provide a query string or use a preset."
+        ));
     }
 
     // --- 1. Find candidates ---
-    let candidate_files = get_candidate_files(
-        &args.root,
-        args.no_ignore,
-        args.hidden,
-        args.max_depth,
-    )?;
+    let candidate_files =
+        get_candidate_files(&args.root, args.no_ignore, args.hidden, args.max_depth)?;
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
@@ -160,7 +160,12 @@ mod tests {
         paths.sort();
         paths
             .into_iter()
-            .map(|p| p.strip_prefix(root).unwrap().to_string_lossy().replace("\\", "/"))
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace("\\", "/")
+            })
             .collect()
     }
 
