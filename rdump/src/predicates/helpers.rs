@@ -8,7 +8,8 @@ pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool
         .to_lowercase()
         .replace("kb", " * 1024")
         .replace("mb", " * 1024 * 1024")
-        .replace("gb", " * 1024 * 1024 * 1024");
+        .replace("gb", " * 1024 * 1024 * 1024")
+        .replace('b', "");
 
     // A simple expression evaluator for "N * N * N..."
     let target_size_bytes = target_size

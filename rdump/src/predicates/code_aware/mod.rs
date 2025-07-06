@@ -52,15 +52,20 @@ impl PredicateEvaluator for CodeAwareEvaluator {
                     let captured_node = capture.node;
                     let captured_text = captured_node.utf8_text(content.as_bytes())?;
 
-                    // Use the correct matching strategy based on the predicate type.
-                   let is_match = match key {
-                       // Content-based predicates check for substrings.
-                       PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
-                           captured_text.contains(value)
-                       }
-                       // Definition-based predicates require an exact match on the identifier.
-                       _ => captured_text == value,
-                   };
+                    // Use the correct matching strategy. If the query value is a wildcard '.',
+                    // it matches any node of the captured type. Otherwise, perform a specific check.
+                    let is_match = if value == "." {
+                        true
+                    } else {
+                        match key {
+                            // Content-based predicates check for substrings.
+                            PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
+                                captured_text.contains(value)
+                            }
+                            // Definition-based predicates require an exact match on the identifier.
+                            _ => captured_text == value,
+                        }
+                    };
 
                     if is_match {
                        ranges.push(captured_node.range());

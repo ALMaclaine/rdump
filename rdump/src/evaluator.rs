@@ -176,7 +176,7 @@ impl MatchResult {
             }
             (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
             (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
-            (MatchResult::Boolean(_), MatchResult::Boolean(_)) => MatchResult::Boolean(true),
+            (MatchResult::Boolean(a), MatchResult::Boolean(b)) => MatchResult::Boolean(a && b),
         }
     }
 }
@@ -250,5 +250,20 @@ mod tests {
             .evaluate(&mut context)
             .unwrap()
             .is_match());
+    }
+
+    #[test]
+    fn test_combine_with_hunks_intersection() {
+        let hunks1 = vec![tree_sitter::Range { start_byte: 10, end_byte: 20, start_point: Default::default(), end_point: Default::default() }];
+        let hunks2 = vec![tree_sitter::Range { start_byte: 15, end_byte: 25, start_point: Default::default(), end_point: Default::default() }];
+        let result1 = MatchResult::Hunks(hunks1);
+        let result2 = MatchResult::Hunks(hunks2);
+        let combined = result1.combine_with(result2);
+        assert!(combined.is_match());
+        if let MatchResult::Hunks(hunks) = combined {
+            assert_eq!(hunks.len(), 2);
+        } else {
+            panic!("Expected Hunks result");
+        }
     }
 }
