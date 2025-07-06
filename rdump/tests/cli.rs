@@ -81,7 +81,7 @@ fn test_search_simple_predicate_succeeds() -> Result<(), Box<dyn std::error::Err
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("File: ./main.rs"))
-        .stdout(predicate::str::contains("\x1b[38;2;")) // Check for ANSI color codes
+        .stdout(predicate::str::contains("```rs")) // Check for markdown code fence
         .stdout(predicate::str::contains("---").count(1))
         .stdout(predicate::str::contains("other.txt").not());
     Ok(())
@@ -228,7 +228,7 @@ fn test_output_formatting_flags() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(predicate::str::contains(r#""path": "./main.rs""#))
         .stdout(predicate::str::contains(r#""content": "fn main() {}""#));
 
-    // Test --format cat with --line-numbers
+    // Test --format cat with --line-numbers (no color, since it's a pipe)
     let mut cmd_cat = Command::cargo_bin("rdump")?;
     cmd_cat.current_dir(&root);
     cmd_cat
@@ -240,8 +240,20 @@ fn test_output_formatting_flags() -> Result<(), Box<dyn std::error::Error>> {
     cmd_cat
         .assert()
         .success()
-        .stdout(predicate::str::contains("1 |"))
-        .stdout(predicate::str::contains("\x1b[38;2;")); // Check for ANSI color codes
+        .stdout(predicate::str::contains("1 | fn main() {}"))
+        .stdout(predicate::str::contains("\x1b[").not()); // Check for NO ANSI color codes
+
+    // Test --color=always to force highlighting
+    let mut cmd_color = Command::cargo_bin("rdump")?;
+    cmd_color.current_dir(&root);
+    cmd_color
+        .arg("search")
+        .arg("--color=always")
+        .arg("path:main.rs");
+    cmd_color
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\x1b[")); // Check FOR ANSI color codes
 
     // Test --find shorthand flag
     let mut cmd_find = Command::cargo_bin("rdump")?;

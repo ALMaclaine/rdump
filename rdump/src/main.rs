@@ -35,6 +35,14 @@ pub enum Commands {
     Preset(PresetArgs),
 }
 
+#[derive(Debug, Clone, ValueEnum, Default)]
+pub enum ColorChoice {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
 #[derive(Parser, Debug, Clone)]
 pub struct SearchArgs {
     /// The query string to search for, using rdump Query Language (RQL).
@@ -75,6 +83,8 @@ pub struct SearchArgs {
     pub no_ignore: bool,
     #[arg(long)]
     pub hidden: bool,
+   #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help = "When to use syntax highlighting")]
+   pub color: ColorChoice,
     #[arg(long)]
     pub max_depth: Option<usize>,
 

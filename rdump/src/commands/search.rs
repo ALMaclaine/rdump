@@ -1,4 +1,7 @@
+use crate::{config, ColorChoice, SearchArgs};
+use anyhow::anyhow;
 use anyhow::Result;
+use atty::Stream;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use std::fs::File;
@@ -8,7 +11,6 @@ use std::path::PathBuf;
 use crate::evaluator::{Evaluator, FileContext};
 use crate::formatter;
 use crate::parser;
-use crate::{config, SearchArgs};
 
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
@@ -20,7 +22,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         let preset_query = config
             .presets
             .get(preset_name)
-            .ok_or_else(|| anyhow::anyhow!("Preset '{}' not found", preset_name))?;
+            .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
 
         if final_query.is_empty() {
             final_query = format!("({})", preset_query);
@@ -30,7 +32,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     }
 
     if final_query.is_empty() {
-        return Err(anyhow::anyhow!(
+        return Err(anyhow!(
             "Empty query. Provide a query string or use a preset."
         ));
     }
@@ -41,6 +43,13 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
+
+   // --- Determine if color should be used ---
+   let use_color = match args.color {
+       ColorChoice::Always => true,
+       ColorChoice::Never => false,
+       ColorChoice::Auto => atty::is(Stream::Stdout),
+   };
 
     // --- 3. Evaluate files ---
     let evaluator = Evaluator::new(ast);
@@ -73,7 +82,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &matching_files,
         &args.format,
         args.line_numbers,
-        true, // TODO: Make this configurable
+       use_color,
     )?;
 
     Ok(())
@@ -165,7 +174,7 @@ mod tests {
                 p.strip_prefix(root)
                     .unwrap()
                     .to_string_lossy()
-                    .replace("\\", "/")
+                    .replace('\\', "/")
             })
             .collect()
     }

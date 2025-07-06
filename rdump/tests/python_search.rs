@@ -16,7 +16,7 @@ fn test_def_finds_python_class() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("helper.py"))
-        .stdout(predicate::str::contains("\x1b[38;2;")) // Check for ANSI color codes
+        .stdout(predicate::str::contains("```py")) // Check for markdown code fence
         .stdout(predicate::str::contains("src/main.rs").not());
 }
 
@@ -31,7 +31,7 @@ fn test_func_finds_python_function() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("helper.py"))
-        .stdout(predicate::str::contains("\x1b[38;2;")) // Check for ANSI color codes
+        .stdout(predicate::str::contains("```py")) // Check for markdown code fence
         .stdout(predicate::str::contains("src/main.rs").not());
 }
 
@@ -46,6 +46,6 @@ fn test_import_finds_python_import() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("helper.py"))
-        .stdout(predicate::str::contains("\x1b[38;2;")) // Check for ANSI color codes
+        .stdout(predicate::str::contains("```py")) // Check for markdown code fence
         .stdout(predicate::str::contains("src/lib.rs").not());
 }

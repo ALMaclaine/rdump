@@ -16,7 +16,7 @@ fn test_def_finds_javascript_class() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("logger.js"))
-        .stdout(predicate::str::contains("\x1b[38;2;")) // Check for ANSI color codes
+        .stdout(predicate::str::contains("```js")) // Check for markdown code fence
         .stdout(predicate::str::contains("log_utils.ts").not());
 }
 
