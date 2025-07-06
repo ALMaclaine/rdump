@@ -1,284 +1,109 @@
-Excellent. Let's get this done. We'll implement the full output functionality as planned. This will involve updating the CLI, refactoring the formatter to handle different formats, and connecting it all in `main`.
+Excellent choice. Polishing the existing features is a hallmark of a high-quality project. Let's start with the most obvious refinement: making the `size` predicate more powerful.
+
+Our current implementation only supports bytes. We will upgrade it to understand units like `kb`, `mb`, and `gb`, and even handle fractional values like `1.5kb`.
+
+All of our changes will be confined to the `evaluator.rs` module.
 
 ---
 
-### Step 1: Update the CLI in `main.rs`
+### Step 1: Replace the `parse_and_compare_size` Helper Function
 
-First, we need to teach `clap` about our new `--format` option. To do this cleanly, we'll create a `Format` enum and tell `clap` how to parse it. We'll also update the `Cli` struct.
+We'll replace our simple helper function with a more intelligent one that can parse units. This new function will find the operator, the numeric part, and the unit suffix, then calculate the total bytes.
 
-**Replace the `Cli` struct and add the `Format` enum in `rdump/src/main.rs`.**
-
-```rust
-// In src/main.rs
-
-// Add this to your `use` statements at the top
-use clap::ValueEnum;
-
-// NEW: An enum to represent our output formats for clap
-#[derive(Debug, Clone, ValueEnum)]
-enum Format {
-    Markdown,
-    Json,
-    Paths,
-    Cat,
-}
-
-/// A fast, expressive tool to find and dump file contents for LLM context using a query language.
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Cli {
-    /// The query string to search for files.
-    #[arg(required = true)]
-    query: String,
-
-    /// The root directory to start the search from.
-    #[arg(short, long, default_value = ".")]
-    root: PathBuf,
-
-    /// Output file path. If not provided, output is written to stdout.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// Add line numbers to the output.
-    #[arg(short, long)]
-    line_numbers: bool,
-
-    /// A shorthand for '--format cat'.
-    #[arg(long)]
-    no_headers: bool,
-
-    /// The output format for the results.
-    #[arg(long, value_enum, default_value_t = Format::Markdown)]
-    format: Format,
-}
-```
-
-### Step 2: Refactor the Formatter
-
-Now, we'll completely rewrite `formatter.rs` to handle the different formats. It will now take our new `Format` enum and use a `match` statement to decide what to do.
-
-**Replace the entire contents of `rdump/src/formatter.rs` with this new version.**
+**In `rdump/src/evaluator.rs`, replace the `parse_and_compare_size` function with this new, improved version:**
 
 ```rust
-use anyhow::{Result, Context};
-use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use serde::Serialize;
+// In src/evaluator.rs
 
-// We need to pass the format enum from main.rs
-use crate::Format;
+// ... (keep all code above this function) ...
 
-#[derive(Serialize)]
-struct FileOutput {
-    path: String,
-    content: String,
-}
-
-/// Formats and prints the final output to a generic writer based on the chosen format.
-pub fn print_output(
-    writer: &mut impl Write,
-    matching_files: &[PathBuf],
-    format: &Format,
-    with_line_numbers: bool,
-) -> Result<()> {
-    match format {
-        Format::Paths => {
-            for path in matching_files {
-                writeln!(writer, "{}", path.display())?;
-            }
-        }
-        Format::Cat => {
-            for path in matching_files {
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
-                if with_line_numbers {
-                    for (i, line) in content.lines().enumerate() {
-                        writeln!(writer, "{:>5} | {}", i + 1, line)?;
-                    }
-                } else {
-                    writeln!(writer, "{}", content)?;
-                }
-            }
-        }
-        Format::Json => {
-            let mut outputs = Vec::new();
-            for path in matching_files {
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
-                outputs.push(FileOutput {
-                    path: path.to_string_lossy().to_string(),
-                    content,
-                });
-            }
-            // Use to_writer_pretty for readable JSON output
-            serde_json::to_writer_pretty(writer, &outputs)?;
-        }
-        Format::Markdown => {
-            for (i, path) in matching_files.iter().enumerate() {
-                if i > 0 {
-                    writeln!(writer, "\n---\n")?;
-                }
-                writeln!(writer, "File: {}", path.display())?;
-                writeln!(writer, "---")?;
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
-
-                if with_line_numbers {
-                    for (i, line) in content.lines().enumerate() {
-                        writeln!(writer, "{:>5} | {}", i + 1, line)?;
-                    }
-                } else {
-                    writeln!(writer, "{}", content)?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-    use std::io::Write;
-    use std::path::PathBuf;
-
-    fn create_temp_file_with_content(content: &str) -> NamedTempFile {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(content.as_bytes()).unwrap();
-        file
+fn parse_and_compare_size(file_size: u64, value: &str) -> Result<bool> {
+    if value.len() < 2 {
+        return Err(anyhow::anyhow!("Invalid size format. Expected <op><num>[unit], e.g., '>10kb'"));
     }
 
-    // --- UPDATED AND NEW TESTS ---
+    let op = value.chars().next().unwrap();
+    let rest = &value[1..];
 
-    #[test]
-    fn test_format_markdown() {
-        let file = create_temp_file_with_content("line 1");
-        let paths = vec![file.path().to_path_buf()];
-        let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Markdown, false).unwrap();
-        let output = String::from_utf8(writer).unwrap();
-        let expected = format!("File: {}\n---\nline 1\n", file.path().display());
-        assert_eq!(output, expected);
-    }
+    // Find the end of the numeric part
+    let numeric_part_end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(rest.len());
 
-    #[test]
-    fn test_format_cat_with_line_numbers() {
-        let file = create_temp_file_with_content("a\nb");
-        let paths = vec![file.path().to_path_buf()];
-        let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, true).unwrap();
-        let output = String::from_utf8(writer).unwrap();
-        assert_eq!(output, "    1 | a\n    2 | b\n");
-    }
+    let (num_str, unit_str) = rest.split_at(numeric_part_end);
+    let num: f64 = num_str.parse()?;
 
-    #[test]
-    fn test_format_paths() {
-        let file1 = create_temp_file_with_content("a");
-        let file2 = create_temp_file_with_content("b");
-        let paths = vec![file1.path().to_path_buf(), file2.path().to_path_buf()];
-        let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Paths, false).unwrap();
-        let output = String::from_utf8(writer).unwrap();
-        let expected = format!("{}\n{}\n", file1.path().display(), file2.path().display());
-        assert_eq!(output, expected);
-    }
-
-    #[test]
-    fn test_format_json() {
-        let file1 = create_temp_file_with_content("{\"key\": \"value\"}");
-        let file2 = create_temp_file_with_content("some text");
-        let paths = vec![file1.path().to_path_buf(), file2.path().to_path_buf()];
-        let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Json, false).unwrap();
-
-        // The output is pretty-printed, so we compare the parsed data, not the raw string.
-        let output_data: Vec<FileOutput> = serde_json::from_slice(&writer).unwrap();
-
-        assert_eq!(output_data.len(), 2);
-        assert_eq!(output_data[0].path, file1.path().to_string_lossy());
-        assert_eq!(output_data[0].content, "{\"key\": \"value\"}");
-        assert_eq!(output_data[1].path, file2.path().to_string_lossy());
-        assert_eq!(output_data[1].content, "some text");
-    }
-}
-```
-
-### Step 3: Finalize `main.rs`
-
-Now we'll update the `main` function to handle the `--output` flag and pass the correct format to our new formatter. This uses a nice pattern called a "boxed trait object" (`Box<dyn Write>`) to seamlessly switch between writing to the console and writing to a file.
-
-**Replace the `main` function in `rdump/src/main.rs` with this final version.**
-
-```rust
-// In src/main.rs
-
-// Add these to your `use` statements at the top
-use std::fs::File;
-use std::io::{self, Write};
-
-fn main() -> Result<()> {
-    let mut cli = Cli::parse();
-
-    // --- Handle `--no-headers` shorthand ---
-    if cli.no_headers {
-        cli.format = Format::Cat;
-    }
-
-    // --- 1. Find candidates ---
-    let candidate_files = get_candidate_files(&cli.root)?;
-
-    // --- 2. Parse query ---
-    let ast = parser::parse_query(&cli.query)?;
-
-    // --- 3. Evaluate files ---
-    let evaluator = Evaluator::new(&ast);
-    let mut matching_files: Vec<PathBuf> = candidate_files
-        .par_iter()
-        .filter_map(|path| match evaluator.evaluate(path) {
-            Ok(true) => Some(path.clone()),
-            Ok(false) => None,
-            Err(e) => {
-                eprintln!("Error evaluating file {}: {}", path.display(), e);
-                None
-            }
-        })
-        .collect();
-
-    matching_files.sort();
-
-    // --- 4. Format and print results ---
-    // This `Box<dyn Write>` lets us decide at runtime whether to write
-    // to stdout or a file, without changing the formatter's code.
-    let mut writer: Box<dyn Write> = if let Some(output_path) = &cli.output {
-        Box::new(File::create(output_path)?)
-    } else {
-        Box::new(io::stdout())
+    let multiplier = match unit_str.trim().to_lowercase().as_str() {
+        "" | "b" => 1.0,
+        "k" | "kb" => 1024.0,
+        "m" | "mb" => 1024.0 * 1024.0,
+        "g" | "gb" => 1024.0 * 1024.0 * 1024.0,
+        _ => return Err(anyhow::anyhow!("Invalid size unit: '{}'. Supported units: k, kb, m, mb, g, gb.", unit_str)),
     };
 
-    formatter::print_output(
-        &mut writer,
-        &matching_files,
-        &cli.format,
-        cli.line_numbers,
-    )?;
+    let target_size = (num * multiplier) as u64;
 
-    Ok(())
+    match op {
+        '>' => Ok(file_size > target_size),
+        '<' => Ok(file_size < target_size),
+        _ => Err(anyhow::anyhow!("Invalid size operator: '{}'. Must be '>' or '<'.", op)),
+    }
 }
+
+// ... (keep parse_and_compare_time and the tests module below this) ...
 ```
+
+### Step 2: Update and Add Tests
+
+Our old `test_predicate_size` is now obsolete. We need a new, more comprehensive test that verifies our new unit parsing logic.
+
+**In `rdump/src/evaluator.rs`, find the `tests` module and replace the `test_predicate_size` function with this new one:**
+
+```rust
+// In the #[cfg(test)] mod tests { ... } block
+
+    #[test]
+    fn test_predicate_size_with_units() {
+        // Create a file that is exactly 1.5 KB (1536 bytes)
+        let content: Vec<u8> = vec![0; 1536];
+        let mut file = create_temp_file("", "txt"); // file name/ext don't matter
+        file.write_all(&content).unwrap();
+
+        // Test kilobytes
+        assert_eval("size:>1kb", file.path(), true);
+        assert_eval("size:<2kb", file.path(), true);
+        assert_eval("size:>1.6KB", file.path(), false); // Test uppercase and float
+        assert_eval("size:<1.4k", file.path(), false); // Test single letter unit
+
+        // Test bytes
+        assert_eval("size:>1535", file.path(), true);
+        assert_eval("size:<1537b", file.path(), true); // Test 'b' unit
+        assert_eval("size:>1536", file.path(), false);
+
+        // Test megabytes
+        assert_eval("size:<1mb", file.path(), true);
+
+        // Test invalid query
+        let ast = parser::parse_query("size:>10xb").unwrap();
+        let evaluator = Evaluator::new(&ast);
+        let result = evaluator.evaluate(file.path());
+        assert!(result.is_err(), "Invalid size unit should produce an error");
+    }
+```
+
+### Why This Works
+
+1.  **Robust Parsing:** The new `parse_and_compare_size` function correctly separates the parts of the value string (e.g., `>` and `1.5` and `kb`).
+2.  **Float Support:** By parsing the number as an `f64`, we can handle queries like `size:<0.5mb`.
+3.  **Unit Conversion:** The `match` statement handles all the common units (`k`, `kb`, `m`, `mb`, etc.), case-insensitively, and calculates the correct byte multiplier.
+4.  **Error Handling:** If a user provides an invalid operator or unit, the function returns a clear `Err`, which will be reported gracefully by `main.rs`.
+5.  **Comprehensive Testing:** The new test creates a file of a precise size and checks multiple conditions against it, ensuring our logic for bytes, kilobytes, and megabytes is correct.
 
 ### Your Next Steps
 
-1.  Update the `Cli` struct and add the `Format` enum in `src/main.rs`.
-2.  Replace the entire contents of `src/formatter.rs` with the new version.
-3.  Replace the `main` function in `src/main.rs` with the final version.
-4.  Run `cargo test`. All tests should pass.
-5.  **Run the finished tool!**
-    *   `cargo run -- "ext:toml"`
-    *   `cargo run -- --format=json "ext:toml"`
-    *   `cargo run -- --format=paths "ext:toml"`
-    *   `cargo run -- --output=my_dump.txt "ext:toml"` (This will create a file!)
+1.  In `src/evaluator.rs`, replace the `parse_and_compare_size` function.
+2.  In `src/evaluator.rs`, replace the old `test_predicate_size` with the new `test_predicate_size_with_units`.
+3.  Run `cargo test`. All 45 tests should pass.
+4.  **Try it out!** Run `cargo run -- "size:<1kb"` to find all small files in your project.
 
-With this, your tool is now fully spec-complete for v1.0, minus a few of the more advanced predicates and flags. Congratulations
+With this, our `size` predicate is now a truly powerful and user-friendly feature.

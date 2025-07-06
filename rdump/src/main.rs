@@ -51,6 +51,19 @@ struct Cli {
     /// The output format for the results.
     #[arg(long, value_enum, default_value_t = Format::Markdown)]
     format: Format,
+
+    // --- NEW FLAGS ---
+    /// Do not respect .gitignore and other ignore files.
+    #[arg(long)]
+    no_ignore: bool,
+
+    /// Search hidden files and directories.
+    #[arg(long)]
+    hidden: bool,
+
+    /// Set the maximum search depth.
+    #[arg(long)]
+    max_depth: Option<usize>,
 }
 
 
@@ -64,7 +77,13 @@ fn main() -> Result<()> {
     }
 
     // --- 1. Find candidates ---
-    let candidate_files = get_candidate_files(&cli.root)?;
+    // MODIFIED: Pass the new flags to the function.
+    let candidate_files = get_candidate_files(
+        &cli.root,
+        cli.no_ignore,
+        cli.hidden,
+        cli.max_depth,
+    )?;
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&cli.query)?;
@@ -104,19 +123,34 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Walks the directory, respects .gitignore, and applies our own smart defaults to return a list of files.
-fn get_candidate_files(root: &PathBuf) -> Result<Vec<PathBuf>> {
+/// Walks the directory, respecting .gitignore, and applies our own smart defaults to return a list of files.
+// MODIFIED: The function now takes the flags it needs from the Cli struct.
+fn get_candidate_files(
+    root: &PathBuf,
+    no_ignore: bool,
+    hidden: bool,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     let mut override_builder = OverrideBuilder::new(root);
-    override_builder.add("!node_modules/")?;
-    override_builder.add("!target/")?;
-    override_builder.add("!.git/")?;
+    // Only apply our smart defaults if ignore files are being used.
+    if !no_ignore {
+        override_builder.add("!node_modules/")?;
+        override_builder.add("!target/")?;
+        override_builder.add("!.git/")?;
+    }
     let overrides = override_builder.build()?;
 
-    let walker = WalkBuilder::new(root).overrides(overrides).build();
+    // --- MODIFIED: Configure WalkBuilder with our new flags ---
+    let mut walker_builder = WalkBuilder::new(root);
+    walker_builder
+        .overrides(overrides)
+        .ignore(!no_ignore) // The .ignore(bool) method defaults to true. We pass the opposite of our flag.
+        .hidden(!hidden)    // The .hidden(bool) method defaults to true (hides files). We pass the opposite.
+        .max_depth(max_depth);
 
-    for result in walker {
+    for result in walker_builder.build() {
         let entry = result?;
         if entry.file_type().map_or(false, |ft| ft.is_file()) {
             files.push(entry.into_path());

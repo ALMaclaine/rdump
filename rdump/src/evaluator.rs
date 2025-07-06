@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use regex;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use crate::parser::{AstNode, PredicateKey};
 
@@ -74,49 +75,109 @@ impl<'a> Evaluator<'a> {
     ) -> Result<bool> {
         match key {
             PredicateKey::Ext => {
-                let file_ext = context
-                    .path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
+                let file_ext = context.path.extension().and_then(|s| s.to_str()).unwrap_or("");
                 Ok(file_ext.eq_ignore_ascii_case(value))
             }
             PredicateKey::Path => {
                 let path_str = context.path.to_string_lossy();
                 Ok(path_str.contains(value))
             }
-            PredicateKey::Contains => {
-                let content = context.get_content()?;
-                Ok(content.contains(value))
-            }
-            // --- NEW IMPLEMENTATIONS ---
             PredicateKey::Name => {
-                let file_name = context
-                    .path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                // Use the `glob` crate to match the pattern.
+                let file_name = context.path.file_name().and_then(|s| s.to_str()).unwrap_or("");
                 let pattern = glob::Pattern::new(value)
                     .with_context(|| format!("Invalid glob pattern: '{}'", value))?;
                 Ok(pattern.matches(file_name))
             }
+            PredicateKey::Contains => {
+                let content = context.get_content()?;
+                Ok(content.contains(value))
+            }
             PredicateKey::Matches => {
-                // Use the `regex` crate to match the pattern.
                 let content = context.get_content()?;
                 let re = regex::Regex::new(value)
                     .with_context(|| format!("Invalid regex pattern: '{}'", value))?;
                 Ok(re.is_match(content))
             }
+            
+            // --- NEW IMPLEMENTATIONS ---
+            PredicateKey::Size => {
+                let metadata = context.path.metadata()?;
+                let file_size = metadata.len();
+                parse_and_compare_size(file_size, value)
+            }
+            PredicateKey::Modified => {
+                let metadata = context.path.metadata()?;
+                let modified_time = metadata.modified()?;
+                parse_and_compare_time(modified_time, value)
+            }
             // --- END NEW ---
+
             PredicateKey::Other(unknown_key) => {
-                // Handle unknown predicates gracefully.
                 println!("Warning: unknown predicate key '{}'", unknown_key);
                 Ok(false)
             }
         }
     }
 }
+
+fn parse_and_compare_size(file_size: u64, value: &str) -> Result<bool> {
+    if value.len() < 2 {
+        return Err(anyhow::anyhow!("Invalid size format. Expected <op><num>[unit], e.g., '>10kb'"));
+    }
+
+    let op = value.chars().next().unwrap();
+    let rest = &value[1..];
+
+    // Find the end of the numeric part
+    let numeric_part_end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(rest.len());
+
+    let (num_str, unit_str) = rest.split_at(numeric_part_end);
+    let num: f64 = num_str.parse()?;
+
+    let multiplier = match unit_str.trim().to_lowercase().as_str() {
+        "" | "b" => 1.0,
+        "k" | "kb" => 1024.0,
+        "m" | "mb" => 1024.0 * 1024.0,
+        "g" | "gb" => 1024.0 * 1024.0 * 1024.0,
+        _ => return Err(anyhow::anyhow!("Invalid size unit: '{}'. Supported units: k, kb, m, mb, g, gb.", unit_str)),
+    };
+
+    let target_size = (num * multiplier) as u64;
+
+    match op {
+        '>' => Ok(file_size > target_size),
+        '<' => Ok(file_size < target_size),
+        _ => Err(anyhow::anyhow!("Invalid size operator: '{}'. Must be '>' or '<'.", op)),
+    }
+}
+
+fn parse_and_compare_time(modified_time: SystemTime, value: &str) -> Result<bool> {
+    let (op, duration_str) = value.split_at(1);
+    let now = SystemTime::now();
+
+    let (num_str, unit) = duration_str.split_at(duration_str.len() - 1);
+    let num: u64 = num_str.parse()?;
+
+    let duration = match unit {
+        "s" => Duration::from_secs(num),
+        "m" => Duration::from_secs(num * 60),
+        "h" => Duration::from_secs(num * 3600),
+        "d" => Duration::from_secs(num * 3600 * 24),
+        "w" => Duration::from_secs(num * 3600 * 24 * 7),
+        _ => return Err(anyhow::anyhow!("Invalid time unit: '{}'. Must be s, m, h, d, w.", unit)),
+    };
+    
+    let cutoff_time = now - duration;
+
+    match op {
+        ">" => Ok(modified_time > cutoff_time), // Modified more recently than the cutoff
+        "<" => Ok(modified_time < cutoff_time), // Modified longer ago than the cutoff
+        _ => Err(anyhow::anyhow!("Invalid time operator: '{}'. Must be '>' or '<'.", op)),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -260,5 +321,42 @@ mod tests {
         // Our parser turns `foo:bar` into `PredicateKey::Other("foo")`
         // The evaluator should see this and return false.
         assert_eval("foo:bar", file.path(), false);
+    }
+
+    #[test]
+    fn test_predicate_size_with_units() {
+        // Create a file that is exactly 1.5 KB (1536 bytes)
+        let content: Vec<u8> = vec![0; 1536];
+        let mut file = create_temp_file("", "txt"); // file name/ext don't matter
+        file.write_all(&content).unwrap();
+
+        // Test kilobytes
+        assert_eval("size:>1kb", file.path(), true);
+        assert_eval("size:<2kb", file.path(), true);
+        assert_eval("size:>1.6KB", file.path(), false); // Test uppercase and float
+        assert_eval("size:<1.4k", file.path(), false); // Test single letter unit
+
+        // Test bytes
+        assert_eval("size:>1535", file.path(), true);
+        assert_eval("size:<1537b", file.path(), true); // Test 'b' unit
+        assert_eval("size:>1536", file.path(), false);
+
+        // Test megabytes
+        assert_eval("size:<1mb", file.path(), true);
+
+        // Test invalid query
+        let ast = parser::parse_query("size:>10xb").unwrap();
+        let evaluator = Evaluator::new(&ast);
+        let result = evaluator.evaluate(file.path());
+        assert!(result.is_err(), "Invalid size unit should produce an error");
+    }
+
+    #[test]
+    fn test_predicate_modified() {
+        let file = create_temp_file("content", "txt");
+        // The file was just created, so it was modified less than 1 hour ago.
+        assert_eval("modified:>1h", file.path(), true);
+        // It was not modified more than 1 hour ago.
+        assert_eval("modified:<1h", file.path(), false);
     }
 }

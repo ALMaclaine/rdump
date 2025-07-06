@@ -20,8 +20,9 @@ identifier = @{ ASCII_ALPHANUMERIC+ }
 // --- CORRECTED VALUE RULES ---
 value = { quoted_value | unquoted_value }
 
-// An unquoted value cannot contain whitespace or operators
-unquoted_value = @{ (ASCII_ALPHANUMERIC | "." | "_" | "-")+ }
+// An unquoted value is a sequence of characters that are not special operators or whitespace.
+// It can include comparison operators and time/size units.
+unquoted_value = @{ (!(":" | "&" | "|" | "(" | ")" | " " | "\t" | "\n" | "\r") ~ ANY)+ }
 
 // A quoted value captures everything between the quotes
 quoted_value = { single_quoted | double_quoted }

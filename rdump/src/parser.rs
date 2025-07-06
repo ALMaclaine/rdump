@@ -14,6 +14,9 @@ pub enum PredicateKey {
     Path,
     Contains,
     Matches,
+    // --- NEW PREDICATES ---
+    Size,
+    Modified,
     // A key for testing or unknown predicates
     Other(String),
 }
@@ -26,6 +29,9 @@ impl PredicateKey {
             "path" => Self::Path,
             "contains" | "c" => Self::Contains,
             "matches" | "m" => Self::Matches,
+            // --- NEW PREDICATES ---
+            "size" => Self::Size,
+            "modified" => Self::Modified,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
