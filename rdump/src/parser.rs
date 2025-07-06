@@ -7,7 +7,7 @@ use pest_derive::Parser;
 #[grammar = "rql.pest"]
 pub struct RqlParser;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub enum PredicateKey {
     Ext,
     Name,

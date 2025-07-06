@@ -4,6 +4,7 @@ mod config;
 mod evaluator;
 mod formatter;
 mod parser;
+mod predicates; // <-- NEW
 
 use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
