@@ -2,6 +2,7 @@ use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
+use glob::{MatchOptions, Pattern};
 
 pub(super) struct NameEvaluator;
 impl PredicateEvaluator for NameEvaluator {
@@ -16,8 +17,12 @@ impl PredicateEvaluator for NameEvaluator {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        let pattern = glob::Pattern::new(value)?;
-        Ok(MatchResult::Boolean(pattern.matches(file_name)))
+        let options = MatchOptions {
+            case_sensitive: false,
+            ..Default::default()
+        };
+        let pattern = Pattern::new(value)?;
+        Ok(MatchResult::Boolean(pattern.matches_with(file_name, options)))
     }
 }
 
