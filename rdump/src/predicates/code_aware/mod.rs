@@ -1,7 +1,7 @@
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use crate::predicates::PredicateEvaluator;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use tree_sitter::{Query, QueryCursor};
 
 pub mod profiles;
@@ -54,29 +54,20 @@ impl PredicateEvaluator for CodeAwareEvaluator {
             for capture in m.captures {
                 // We only care about nodes captured with the name `@match`.
                 let capture_name = &query.capture_names()[capture.index as usize];
-                if *capture_name == "match" {
-                    let captured_node = capture.node;
-                    let captured_text = captured_node.utf8_text(content.as_bytes())?;
+                let node_text = content
+                                .get(capture.node.byte_range())
+                                .ok_or_else(|| anyhow!("Failed to get text for node"))?;
+                            
+                            let matched = match key {
+                                // For these, we check for substrings.
+                                PredicateKey::Comment | PredicateKey::Str | PredicateKey::Import => node_text.contains(value),
+                                // For everything else (defs, funcs, calls), we want an exact match on the identifier.
+                                _ => node_text == value,
+                            };
 
-                    // Use the correct matching strategy. If the query value is a wildcard '.',
-                    // it matches any node of the captured type. Otherwise, perform a specific check.
-                    let is_match = if value == "." {
-                        true
-                    } else {
-                        match key {
-                            // Content-based predicates check for substrings.
-                            PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
-                                captured_text.contains(value)
+                            if matched {
+                                ranges.push(capture.node.range());
                             }
-                            // Definition-based predicates require an exact match on the identifier.
-                            _ => captured_text == value,
-                        }
-                    };
-
-                    if is_match {
-                       ranges.push(captured_node.range());
-                    }
-                }
             }
         }
 

@@ -8,7 +8,8 @@ use common::setup_test_project;
 #[test]
 fn test_class_predicate_java() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("class:Application & ext:java")
@@ -21,7 +22,8 @@ fn test_class_predicate_java() {
 #[test]
 fn test_func_and_call_predicates_java() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("func:main & call:println")
@@ -33,7 +35,8 @@ fn test_func_and_call_predicates_java() {
 #[test]
 fn test_import_and_comment_predicates_java() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("import:ArrayList & comment:HACK")
@@ -45,7 +48,8 @@ fn test_import_and_comment_predicates_java() {
 #[test]
 fn test_str_predicate_java() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("str:\"Hello from Java!\"")

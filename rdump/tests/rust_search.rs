@@ -141,7 +141,8 @@ fn test_logical_or_across_files() {
 #[test]
 fn test_comment_predicate_rust() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("comment:TODO")
@@ -154,7 +155,8 @@ fn test_comment_predicate_rust() {
 #[test]
 fn test_str_predicate_rust() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("str:\"Hello, world!\"")
@@ -166,7 +168,8 @@ fn test_str_predicate_rust() {
 #[test]
 fn test_type_and_struct_predicates_rust() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("type:UserId & struct:User")
@@ -178,7 +181,8 @@ fn test_type_and_struct_predicates_rust() {
 #[test]
 fn test_call_predicate_rust() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("call:println & ext:rs")
@@ -193,7 +197,8 @@ fn test_logical_operators_with_hunks() {
     let dir = setup_test_project();
     // Query: find the file that defines the `Cli` struct AND ALSO contains a `TODO` comment.
     // This should only match main.rs
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("--format=hunks")
@@ -208,7 +213,8 @@ fn test_negation_with_hunks() {
     let dir = setup_test_project();
     // Query: find files with `User` struct but NOT containing `TODO`
     // This should only match lib.rs
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("--format=hunks")
@@ -235,5 +241,11 @@ fn test_and_of_semantic_predicates() {
     let output = cmd.output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 0, "Expected exactly 0 files, but found {}: {:?}", lines.len(), lines);
+    assert_eq!(
+        lines.len(),
+        0,
+        "Expected exactly 0 files, but found {}: {:?}",
+        lines.len(),
+        lines
+    );
 }

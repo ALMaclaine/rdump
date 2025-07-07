@@ -1,10 +1,9 @@
-
 #![allow(dead_code)] // a-llow dead code for this common helper module
 
 use std::fs;
 use std::io::Write;
-use tempfile::TempDir;
 use tempfile::tempdir;
+use tempfile::TempDir;
 
 /// A helper to set up a temporary directory with a multi-language sample project.
 pub fn setup_test_project() -> TempDir {
@@ -118,8 +117,8 @@ export function createLog(message: string): ILog {
         .write_all(ts_content.as_bytes())
         .unwrap();
 
-   // --- NEW: Add a Go file ---
-   let go_content = r#"
+    // --- NEW: Add a Go file ---
+    let go_content = r#"
 package main
 
 import "fmt"
@@ -138,15 +137,15 @@ func main() {
 	fmt.Println(server.Address)
 }
 "#;
-   fs::File::create(src_dir.join("main.go"))
-       .unwrap()
-       .write_all(go_content.as_bytes())
-       .unwrap();
+    fs::File::create(src_dir.join("main.go"))
+        .unwrap()
+        .write_all(go_content.as_bytes())
+        .unwrap();
 
-   // --- NEW: Add a Java file ---
-   let java_dir = dir.path().join("src/main/java/com/example");
-   fs::create_dir_all(&java_dir).unwrap();
-   let java_content = r#"
+    // --- NEW: Add a Java file ---
+    let java_dir = dir.path().join("src/main/java/com/example");
+    fs::create_dir_all(&java_dir).unwrap();
+    let java_content = r#"
 package com.example;
 
 import java.util.ArrayList;
@@ -162,10 +161,10 @@ public class Application {
     }
 }
 "#;
-   fs::File::create(java_dir.join("Application.java"))
-       .unwrap()
-       .write_all(java_content.as_bytes())
-       .unwrap();
+    fs::File::create(java_dir.join("Application.java"))
+        .unwrap()
+        .write_all(java_content.as_bytes())
+        .unwrap();
 
     dir
 }

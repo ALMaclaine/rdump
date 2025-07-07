@@ -24,20 +24,26 @@ fn test_def_finds_javascript_class() {
 fn test_def_finds_typescript_interface_and_type() {
     let dir = setup_test_project();
     let mut cmd = Command::cargo_bin("rdump").unwrap();
-    cmd.current_dir(dir.path()).arg("search").arg("def:ILog | def:LogLevel");
+    cmd.current_dir(dir.path())
+        .arg("search")
+        .arg("def:ILog | def:LogLevel");
 
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("log_utils.ts"))
         .stdout(predicate::str::contains("interface ILog"))
-        .stdout(predicate::str::contains(r#"type LogLevel = "info" | "warn" | "error";"#));
+        .stdout(predicate::str::contains(
+            r#"type LogLevel = "info" | "warn" | "error";"#,
+        ));
 }
 
 #[test]
 fn test_func_finds_typescript_function() {
     let dir = setup_test_project();
     let mut cmd = Command::cargo_bin("rdump").unwrap();
-    cmd.current_dir(dir.path()).arg("search").arg("func:createLog");
+    cmd.current_dir(dir.path())
+        .arg("search")
+        .arg("func:createLog");
 
     cmd.assert()
         .success()
@@ -49,7 +55,9 @@ fn test_func_finds_typescript_function() {
 fn test_import_finds_typescript_import() {
     let dir = setup_test_project();
     let mut cmd = Command::cargo_bin("rdump").unwrap();
-    cmd.current_dir(dir.path()).arg("search").arg("import:path & ext:ts");
+    cmd.current_dir(dir.path())
+        .arg("search")
+        .arg("import:path & ext:ts");
 
     cmd.assert()
         .success()
@@ -60,7 +68,8 @@ fn test_import_finds_typescript_import() {
 #[test]
 fn test_call_predicate_javascript() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("call:log & ext:js")
@@ -73,7 +82,8 @@ fn test_call_predicate_javascript() {
 #[test]
 fn test_call_predicate_typescript() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("call:log & ext:ts")
@@ -86,7 +96,8 @@ fn test_call_predicate_typescript() {
 #[test]
 fn test_comment_predicate_typescript() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("comment:REVIEW")
@@ -98,7 +109,8 @@ fn test_comment_predicate_typescript() {
 #[test]
 fn test_str_predicate_javascript() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("str:logging:")
@@ -110,7 +122,8 @@ fn test_str_predicate_javascript() {
 #[test]
 fn test_interface_and_type_predicates_typescript() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("interface:ILog & type:LogLevel")

@@ -53,7 +53,8 @@ fn test_import_finds_python_import() {
 #[test]
 fn test_comment_and_class_predicates_python() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("comment:FIXME & class:Helper")
@@ -65,7 +66,8 @@ fn test_comment_and_class_predicates_python() {
 #[test]
 fn test_str_predicate_python() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("str:/tmp/data")
@@ -78,7 +80,8 @@ fn test_str_predicate_python() {
 #[ignore]
 fn test_call_predicate_python() {
     let dir = setup_test_project();
-    Command::cargo_bin("rdump").unwrap()
+    Command::cargo_bin("rdump")
+        .unwrap()
         .current_dir(dir.path())
         .arg("search")
         .arg("call:run_helper | call:do_setup")

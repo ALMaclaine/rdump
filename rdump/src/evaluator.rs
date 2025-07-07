@@ -130,38 +130,20 @@ impl Evaluator {
         match node {
             AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
             AstNode::LogicalOp(op, left, right) => {
-                match op {
-                    crate::parser::LogicalOperator::And => {
-                        let left_res = self.evaluate_node(left, context)?;
-                        if !left_res.is_match() {
-                            return Ok(MatchResult::Boolean(false));
-                        }
-                        let right_res = self.evaluate_node(right, context)?;
-                        if !right_res.is_match() {
-                            return Ok(MatchResult::Boolean(false));
-                        }
-                        Ok(left_res.combine_with(right_res, op))
-                    }
-                    crate::parser::LogicalOperator::Or => {
-                        let left_res = self.evaluate_node(left, context)?;
-                        // Short-circuit if we have a non-hunkable, definitive match.
-                        // This prevents expensive evaluation of the right side.
-                        if let MatchResult::Boolean(true) = left_res {
-                            return Ok(left_res);
-                        }
-
-                        let right_res = self.evaluate_node(right, context)?;
-
-                        // Combine the results logically.
-                        if left_res.is_match() && right_res.is_match() {
-                            Ok(left_res.combine_with(right_res, op))
-                        } else if left_res.is_match() {
-                            Ok(left_res) // right side didn't match
-                        } else {
-                            Ok(right_res) // left side didn't match, so result is right
-                        }
+                let left_res = self.evaluate_node(left, context)?;
+                // For AND, if the left side is a non-match, we can short-circuit.
+                if matches!(op, crate::parser::LogicalOperator::And) && !left_res.is_match() {
+                    return Ok(MatchResult::Boolean(false));
+                }
+                // For OR, if the left side is a full-file match (Boolean(true)), we can short-circuit.
+                if matches!(op, crate::parser::LogicalOperator::Or) {
+                    if let MatchResult::Boolean(true) = left_res {
+                        return Ok(left_res);
                     }
                 }
+
+                let right_res = self.evaluate_node(right, context)?;
+                Ok(left_res.combine_with(right_res, op))
             }
             AstNode::Not(inner_node) => {
                 // Evaluate the inner node and negate the result.
@@ -200,26 +182,48 @@ impl MatchResult {
 
     /// Combines two successful match results.
     pub fn combine_with(self, other: MatchResult, op: &crate::parser::LogicalOperator) -> Self {
-        match (self, other) {
-            (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                match op {
-                    crate::parser::LogicalOperator::And => {
+        match op {
+            crate::parser::LogicalOperator::And => {
+                if !self.is_match() || !other.is_match() {
+                    return MatchResult::Boolean(false);
+                }
+                match (self, other) {
+                    // Both are Hunks: Intersect them.
+                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
                         a.retain(|hunk_a| b.iter().any(|hunk_b| Self::hunks_overlap(hunk_a, hunk_b)));
+                        MatchResult::Hunks(a)
                     }
-                    crate::parser::LogicalOperator::Or => {
+                    // One is Hunks, the other is a full-file match: The result is the Hunks.
+                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(true)) => h,
+                    (MatchResult::Boolean(true), h @ MatchResult::Hunks(_)) => h,
+                    // Both are full-file matches.
+                    (MatchResult::Boolean(true), MatchResult::Boolean(true)) => MatchResult::Boolean(true),
+                    // Any other combination is a non-match.
+                    _ => MatchResult::Boolean(false),
+                }
+            }
+            crate::parser::LogicalOperator::Or => {
+                if !self.is_match() && !other.is_match() {
+                    return MatchResult::Boolean(false);
+                }
+                if !self.is_match() { return other; }
+                if !other.is_match() { return self; }
+
+                match (self, other) {
+                    // Both are Hunks: Union them.
+                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
                         a.extend(b);
                         a.sort_by_key(|r| r.start_byte);
                         a.dedup();
+                        MatchResult::Hunks(a)
                     }
-                }
-                MatchResult::Hunks(a)
-            }
-            (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
-            (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
-            (MatchResult::Boolean(a), MatchResult::Boolean(b)) => {
-                match op {
-                    crate::parser::LogicalOperator::And => MatchResult::Boolean(a && b),
-                    crate::parser::LogicalOperator::Or => MatchResult::Boolean(a || b),
+                    // If either is a full-file match, the result is a full-file match.
+                    (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => MatchResult::Boolean(true),
+                    // One is Hunks, the other is a non-matching Boolean: The result is the Hunks.
+                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
+                    (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
+                    // Should be unreachable given the checks above.
+                    _ => MatchResult::Boolean(false),
                 }
             }
         }
