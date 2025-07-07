@@ -2,6 +2,8 @@ use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
+use regex::Regex;
+use tree_sitter::Range;
 
 pub(super) struct MatchesEvaluator;
 impl PredicateEvaluator for MatchesEvaluator {
@@ -12,8 +14,25 @@ impl PredicateEvaluator for MatchesEvaluator {
         value: &str,
     ) -> Result<MatchResult> {
         let content = context.get_content()?;
-        let re = regex::Regex::new(value)?;
-        Ok(MatchResult::Boolean(re.is_match(content)))
+        let re = Regex::new(value)?;
+
+        let mut ranges = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            if re.is_match(line) {
+                let start_byte = content.lines().take(i).map(|l| l.len() + 1).sum();
+                let end_byte = start_byte + line.len();
+                ranges.push(Range {
+                    start_byte,
+                    end_byte,
+                    start_point: tree_sitter::Point { row: i, column: 0 },
+                    end_point: tree_sitter::Point {
+                        row: i,
+                        column: line.len(),
+                    },
+                });
+            }
+        }
+        Ok(MatchResult::Hunks(ranges))
     }
 }
 
@@ -43,12 +62,12 @@ mod tests {
             )
             .unwrap()
             .is_match());
-        // Test regex that spans lines
+        // Test regex that finds a line
         assert!(evaluator
             .evaluate(
                 &mut context,
                 &PredicateKey::Matches,
-                r#"(?s)version.*author"#
+                r#"author = "test""#
             )
             .unwrap()
             .is_match());

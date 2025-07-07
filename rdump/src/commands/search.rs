@@ -199,6 +199,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn get_sorted_file_names(
@@ -249,10 +250,8 @@ mod tests {
         let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
         assert_eq!(files.len(), 2);
         assert!(files.contains(&"app.js".to_string()));
-        assert!(files.contains(
-            &"node_modules/some_dep.js"
-                .to_string()
-                .replace('/', &std::path::MAIN_SEPARATOR.to_string())
-        ));
+        let expected_path = PathBuf::from("node_modules").join("some_dep.js");
+        assert!(files.contains(&expected_path.to_string_lossy().to_string()));
     }
 }
+

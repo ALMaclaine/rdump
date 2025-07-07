@@ -191,6 +191,7 @@ mod tests {
     use crate::parser::LogicalOperator;
     use std::io::Write;
     use tempfile::NamedTempFile;
+    use tree_sitter::Point;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();
@@ -203,14 +204,14 @@ mod tests {
         let hunks1 = vec![Range {
             start_byte: 10,
             end_byte: 20,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let hunks2 = vec![Range {
             start_byte: 30,
             end_byte: 40,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let result1 = MatchResult::Hunks(hunks1);
         let result2 = MatchResult::Hunks(hunks2);
@@ -231,14 +232,14 @@ mod tests {
         let hunks1 = vec![Range {
             start_byte: 10,
             end_byte: 20,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let hunks2 = vec![Range {
             start_byte: 30,
             end_byte: 40,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let result1 = MatchResult::Hunks(hunks1);
         let result2 = MatchResult::Hunks(hunks2);

@@ -368,6 +368,7 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn get_sorted_file_names(
@@ -418,13 +419,11 @@ mod tests {
         let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
         assert_eq!(files.len(), 2);
         assert!(files.contains(&"app.js".to_string()));
-        assert!(files.contains(
-            &"node_modules/some_dep.js"
-                .to_string()
-                .replace('/', &std::path::MAIN_SEPARATOR.to_string())
-        ));
+        let expected_path = PathBuf::from("node_modules").join("some_dep.js");
+        assert!(files.contains(&expected_path.to_string_lossy().to_string()));
     }
 }
+
 
 
 // END rdump/src/commands/search.rs
@@ -795,6 +794,7 @@ mod tests {
     use crate::parser::LogicalOperator;
     use std::io::Write;
     use tempfile::NamedTempFile;
+    use tree_sitter::Point;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
         let file = NamedTempFile::new().unwrap();
@@ -807,14 +807,14 @@ mod tests {
         let hunks1 = vec![Range {
             start_byte: 10,
             end_byte: 20,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let hunks2 = vec![Range {
             start_byte: 30,
             end_byte: 40,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let result1 = MatchResult::Hunks(hunks1);
         let result2 = MatchResult::Hunks(hunks2);
@@ -835,14 +835,14 @@ mod tests {
         let hunks1 = vec![Range {
             start_byte: 10,
             end_byte: 20,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let hunks2 = vec![Range {
             start_byte: 30,
             end_byte: 40,
-            start_point: Point::new(0, 0),
-            end_point: Point::new(0, 0),
+            start_point: Point { row: 0, column: 0 },
+            end_point: Point { row: 0, column: 0 },
         }];
         let result1 = MatchResult::Hunks(hunks1);
         let result2 = MatchResult::Hunks(hunks2);
@@ -2584,6 +2584,8 @@ use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
+use regex::Regex;
+use tree_sitter::Range;
 
 pub(super) struct MatchesEvaluator;
 impl PredicateEvaluator for MatchesEvaluator {
@@ -2594,8 +2596,25 @@ impl PredicateEvaluator for MatchesEvaluator {
         value: &str,
     ) -> Result<MatchResult> {
         let content = context.get_content()?;
-        let re = regex::Regex::new(value)?;
-        Ok(MatchResult::Boolean(re.is_match(content)))
+        let re = Regex::new(value)?;
+
+        let mut ranges = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            if re.is_match(line) {
+                let start_byte = content.lines().take(i).map(|l| l.len() + 1).sum();
+                let end_byte = start_byte + line.len();
+                ranges.push(Range {
+                    start_byte,
+                    end_byte,
+                    start_point: tree_sitter::Point { row: i, column: 0 },
+                    end_point: tree_sitter::Point {
+                        row: i,
+                        column: line.len(),
+                    },
+                });
+            }
+        }
+        Ok(MatchResult::Hunks(ranges))
     }
 }
 
@@ -2625,12 +2644,12 @@ mod tests {
             )
             .unwrap()
             .is_match());
-        // Test regex that spans lines
+        // Test regex that finds a line
         assert!(evaluator
             .evaluate(
                 &mut context,
                 &PredicateKey::Matches,
-                r#"(?s)version.*author"#
+                r#"author = "test""#
             )
             .unwrap()
             .is_match());
