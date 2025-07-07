@@ -91,7 +91,7 @@ pub struct SearchArgs {
     pub output: Option<PathBuf>,
     #[arg(short, long)]
     pub line_numbers: bool,
-    #[arg(long)]
+    #[arg(long, help = "Alias for --format=cat, useful for piping")]
     pub no_headers: bool,
     #[arg(long, value_enum, default_value_t = Format::Hunks)]
     pub format: Format,
@@ -111,7 +111,7 @@ pub struct SearchArgs {
     )]
     pub context: Option<usize>,
 
-    /// List files with metadata instead of dumping content.
+    /// List files with metadata instead of dumping content. Alias for --format=find
     #[arg(long)]
     pub find: bool,
 }

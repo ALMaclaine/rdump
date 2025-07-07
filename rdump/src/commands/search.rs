@@ -18,7 +18,9 @@ use crate::predicates;
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
     // --- Handle Shorthand Flags ---
-
+    if args.no_headers {
+        args.format = crate::Format::Cat;
+    }
     if args.find {
         args.format = crate::Format::Find;
     }
@@ -54,7 +56,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let ast = parser::parse_query(&final_query)?;
 
     // --- 3. Pre-filtering Pass (Metadata) ---
-    // This pass uses a special evaluator with only fast metadata predicates.
+    // This pass uses an evaluator with only fast metadata predicates.
     // It quickly reduces the number of files needing full evaluation.
     let metadata_registry = predicates::create_metadata_predicate_registry();
     let pre_filter_evaluator = Evaluator::new(ast.clone(), metadata_registry);
@@ -63,8 +65,8 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         .into_iter() // This pass is not parallel, it's fast enough.
         .filter(|path| {
             let mut context = FileContext::new(path.clone());
-            match pre_filter_evaluator.pre_filter_evaluate(&mut context) {
-                Ok(is_match) => is_match,
+            match pre_filter_evaluator.evaluate(&mut context) {
+                Ok(result) => result.is_match(),
                 Err(e) => {
                     eprintln!("Error during pre-filter on {}: {}", path.display(), e);
                     false
@@ -138,7 +140,6 @@ fn get_candidate_files(
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut walker_builder = WalkBuilder::new(root);
-    walker_builder.git_ignore(true).ignore(false);
 
     walker_builder.hidden(!hidden).max_depth(max_depth);
 

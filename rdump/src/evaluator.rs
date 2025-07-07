@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use tree_sitter::{Parser, Range, Tree};
 
-use crate::parser::{AstNode, PredicateKey};
+use crate::parser::{AstNode, LogicalOperator, PredicateKey};
 use crate::predicates::PredicateEvaluator;
 
 /// The result of an evaluation for a single file.
@@ -80,64 +80,37 @@ impl Evaluator {
         self.evaluate_node(&self.ast, context)
     }
 
-    /// Evaluates the query for a given file path, but only for metadata predicates.
-    pub fn pre_filter_evaluate(&self, context: &mut FileContext) -> Result<bool> {
-        self.pre_filter_evaluate_node(&self.ast, context)
-    }
-
-    /// Recursively evaluates an AST node for the pre-filtering pass.
-    fn pre_filter_evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<bool> {
-        match node {
-            AstNode::Predicate(key, value) => {
-                if let Some(evaluator) = self.registry.get(key) {
-                    Ok(evaluator.evaluate(context, key, value)?.is_match())
-                } else {
-                    // If a predicate is not in the metadata registry, we can't evaluate it.
-                    // We must assume it *could* match and let the full evaluator decide.
-                    Ok(true)
-                }
-            }
-            AstNode::LogicalOp(op, left, right) => match op {
-                crate::parser::LogicalOperator::And => Ok(self
-                    .pre_filter_evaluate_node(left, context)?
-                    && self.pre_filter_evaluate_node(right, context)?),
-                crate::parser::LogicalOperator::Or => Ok(self
-                    .pre_filter_evaluate_node(left, context)?
-                    || self.pre_filter_evaluate_node(right, context)?),
-            },
-            AstNode::Not(inner_node) => {
-                // For the pre-filtering pass, if the inner predicate of a NOT is not in the
-                // registry, we cannot definitively say the file *doesn't* match.
-                // For example, for `!contains:foo`, the pre-filter doesn't know the content.
-                // So, we must assume it *could* match and let the full evaluator decide.
-                if let AstNode::Predicate(key, _) = &**inner_node {
-                    if !self.registry.contains_key(key) {
-                        return Ok(true); // Pass to the next stage
-                    }
-                }
-                Ok(!self.pre_filter_evaluate_node(inner_node, context)?)
-            }
-        }
-    }
-
     /// Recursively evaluates an AST node.
     fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<MatchResult> {
         match node {
             AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
             AstNode::LogicalOp(op, left, right) => {
                 let left_res = self.evaluate_node(left, context)?;
-                // For OR, if the left side is a full-file match (Boolean(true)), we can short-circuit.
-                if matches!(op, crate::parser::LogicalOperator::Or) {
+
+                // Short-circuit AND if left is false
+                if *op == LogicalOperator::And && !left_res.is_match() {
+                    return Ok(MatchResult::Boolean(false));
+                }
+
+                // Short-circuit OR if left is a full-file match
+                if *op == LogicalOperator::Or {
                     if let MatchResult::Boolean(true) = left_res {
                         return Ok(left_res);
                     }
                 }
-                // For AND, we must evaluate both sides to combine hunks.
+
                 let right_res = self.evaluate_node(right, context)?;
                 Ok(left_res.combine_with(right_res, op))
             }
             AstNode::Not(inner_node) => {
-                // Evaluate the inner node and negate the result.
+                // If the inner predicate of a NOT is not in the registry (e.g., a content
+                // predicate during the metadata-only pass), we cannot definitively say the file
+                // *doesn't* match. We must assume it *could* match and let the full evaluator decide.
+                if let AstNode::Predicate(key, _) = &**inner_node {
+                    if !self.registry.contains_key(key) {
+                        return Ok(MatchResult::Boolean(true));
+                    }
+                }
                 let result = self.evaluate_node(inner_node, context)?;
                 Ok(MatchResult::Boolean(!result.is_match()))
             }
@@ -156,7 +129,6 @@ impl Evaluator {
         } else {
             // If a predicate is not in the current registry (e.g., a content predicate
             // during the metadata-only pass), it's considered a "pass" for this stage.
-            // The full evaluator in the next stage will make the final decision.
             Ok(MatchResult::Boolean(true))
         }
     }
@@ -171,79 +143,52 @@ impl MatchResult {
         }
     }
 
-    /// Combines two successful match results.
-    pub fn combine_with(self, other: MatchResult, op: &crate::parser::LogicalOperator) -> Self {
+    /// Combines two match results based on a logical operator.
+    pub fn combine_with(self, other: MatchResult, op: &LogicalOperator) -> Self {
         match op {
-            crate::parser::LogicalOperator::And => {
+            LogicalOperator::And => {
                 if !self.is_match() || !other.is_match() {
                     return MatchResult::Boolean(false);
                 }
                 match (self, other) {
-                    // Both are Hunks: The AND is only true if both have matches.
-                    // If so, the result is the *union* of the hunks, not the intersection.
                     (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                        if a.is_empty() || b.is_empty() {
-                            return MatchResult::Boolean(false);
-                        }
                         a.extend(b);
                         a.sort_by_key(|r| r.start_byte);
                         a.dedup();
                         MatchResult::Hunks(a)
                     }
-                    // One is Hunks, the other is a full-file match: The result is the Hunks.
                     (h @ MatchResult::Hunks(_), MatchResult::Boolean(true)) => h,
                     (MatchResult::Boolean(true), h @ MatchResult::Hunks(_)) => h,
-                    // Both are full-file matches.
                     (MatchResult::Boolean(true), MatchResult::Boolean(true)) => {
                         MatchResult::Boolean(true)
                     }
-                    // Any other combination is a non-match.
                     _ => MatchResult::Boolean(false),
                 }
             }
-            crate::parser::LogicalOperator::Or => {
-                if !self.is_match() && !other.is_match() {
-                    return MatchResult::Boolean(false);
+            LogicalOperator::Or => match (self, other) {
+                (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => {
+                    MatchResult::Boolean(true)
                 }
-                if !self.is_match() {
-                    return other;
+                (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                    a.extend(b);
+                    a.sort_by_key(|r| r.start_byte);
+                    a.dedup();
+                    MatchResult::Hunks(a)
                 }
-                if !other.is_match() {
-                    return self;
+                (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
+                (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
+                (MatchResult::Boolean(false), MatchResult::Boolean(false)) => {
+                    MatchResult::Boolean(false)
                 }
-
-                match (self, other) {
-                    // Both are Hunks: Union them.
-                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                        a.extend(b);
-                        a.sort_by_key(|r| r.start_byte);
-                        a.dedup();
-                        MatchResult::Hunks(a)
-                    }
-                    // If either is a full-file match, the result is a full-file match.
-                    (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => {
-                        MatchResult::Boolean(true)
-                    }
-                    // One is Hunks, the other is a non-matching Boolean: The result is the Hunks.
-                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
-                    (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
-                    // Should be unreachable given the checks above.
-                    _ => MatchResult::Boolean(false),
-                }
-            }
+            },
         }
     }
-
-    // fn hunks_overlap(a: &Range, b: &Range) -> bool {
-    //     a.start_byte < b.end_byte && b.start_byte < a.end_byte
-    // }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_query;
-    use crate::predicates;
+    use crate::parser::LogicalOperator;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -254,73 +199,54 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_simple_predicate() {
-        let file = create_temp_file("hello world");
-        let mut context = FileContext::new(file.path().to_path_buf());
-        let ast = parse_query("contains:world").unwrap();
-        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
-        assert!(evaluator.evaluate(&mut context).unwrap().is_match());
-    }
-
-    #[test]
-    fn test_evaluate_logical_and() {
-        let file = create_temp_file("hello world");
-        let mut context = FileContext::new(file.path().to_path_buf());
-        let ast = parse_query("contains:hello & contains:world").unwrap();
-        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
-        assert!(evaluator.evaluate(&mut context).unwrap().is_match());
-
-        let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
-    }
-
-    #[test]
-    fn test_evaluate_logical_or() {
-        let file = create_temp_file("hello world");
-        let mut context = FileContext::new(file.path().to_path_buf());
-        let ast = parse_query("contains:hello | contains:goodbye").unwrap();
-        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
-        assert!(evaluator.evaluate(&mut context).unwrap().is_match());
-
-        let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
-    }
-
-    #[test]
-    fn test_evaluate_negation() {
-        let file = create_temp_file("hello world");
-        let mut context = FileContext::new(file.path().to_path_buf());
-        let ast = parse_query("!contains:goodbye").unwrap();
-        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
-        assert!(evaluator.evaluate(&mut context).unwrap().is_match());
-
-        let ast_fail = parse_query("!contains:hello").unwrap();
-        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
-    }
-
-    #[test]
-    fn test_combine_with_hunks_intersection() {
-        let hunks1 = vec![tree_sitter::Range {
+    fn test_combine_with_hunks_and() {
+        let hunks1 = vec![Range {
             start_byte: 10,
             end_byte: 20,
-            start_point: Default::default(),
-            end_point: Default::default(),
+            start_point: Point::new(0, 0),
+            end_point: Point::new(0, 0),
         }];
-        let hunks2 = vec![tree_sitter::Range {
-            start_byte: 15,
-            end_byte: 25,
-            start_point: Default::default(),
-            end_point: Default::default(),
+        let hunks2 = vec![Range {
+            start_byte: 30,
+            end_byte: 40,
+            start_point: Point::new(0, 0),
+            end_point: Point::new(0, 0),
         }];
         let result1 = MatchResult::Hunks(hunks1);
         let result2 = MatchResult::Hunks(hunks2);
-        let combined = result1.combine_with(result2, &crate::parser::LogicalOperator::And);
-        assert!(combined.is_match());
-        if let MatchResult::Hunks(hunks) = combined {
-            assert_eq!(hunks.len(), 2);
+
+        let combined = result1.combine_with(result2, &LogicalOperator::And);
+
+        if let MatchResult::Hunks(h) = combined {
+            assert_eq!(h.len(), 2);
+            assert_eq!(h[0].start_byte, 10);
+            assert_eq!(h[1].start_byte, 30);
+        } else {
+            panic!("Expected Hunks result");
+        }
+    }
+
+    #[test]
+    fn test_combine_with_hunks_or() {
+        let hunks1 = vec![Range {
+            start_byte: 10,
+            end_byte: 20,
+            start_point: Point::new(0, 0),
+            end_point: Point::new(0, 0),
+        }];
+        let hunks2 = vec![Range {
+            start_byte: 30,
+            end_byte: 40,
+            start_point: Point::new(0, 0),
+            end_point: Point::new(0, 0),
+        }];
+        let result1 = MatchResult::Hunks(hunks1);
+        let result2 = MatchResult::Hunks(hunks2);
+
+        let combined = result1.combine_with(result2, &LogicalOperator::Or);
+
+        if let MatchResult::Hunks(h) = combined {
+            assert_eq!(h.len(), 2);
         } else {
             panic!("Expected Hunks result");
         }

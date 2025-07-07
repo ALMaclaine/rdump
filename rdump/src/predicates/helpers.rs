@@ -13,9 +13,11 @@ pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool
         .trim()
         .to_lowercase()
         .replace("kb", " * 1024")
-        .replace("k", " * 1024")
+        .replace('k', " * 1024")
         .replace("mb", " * 1024 * 1024")
+        .replace('m', " * 1024 * 1024")
         .replace("gb", " * 1024 * 1024 * 1024")
+        .replace('g', " * 1024 * 1024 * 1024")
         .replace('b', "");
 
     // A simple expression evaluator for "N * N * N..."

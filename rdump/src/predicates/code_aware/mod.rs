@@ -1,7 +1,7 @@
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use crate::predicates::PredicateEvaluator;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use tree_sitter::{Query, QueryCursor};
 
 pub mod profiles;
@@ -36,7 +36,6 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         };
 
         // 3. Get content and lazily get the parsed tree from the file context.
-        // We get content first to avoid mutable/immutable borrow issues with context.
         let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
         let tree = match context.get_tree(profile.language.clone()) {
             Ok(tree) => tree,
@@ -62,23 +61,26 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         for m in captures {
             for capture in m.captures {
                 // We only care about nodes captured with the name `@match`.
-                let _capture_name = &query.capture_names()[capture.index as usize];
-                let node_text = content
-                    .get(capture.node.byte_range())
-                    .ok_or_else(|| anyhow!("Failed to get text for node"))?;
+                let capture_name = &query.capture_names()[capture.index as usize];
+                if *capture_name != "match" {
+                    continue;
+                }
 
-                let matched = match (key, value) {
-                    // For comments and strings, we check for substrings.
-                    (PredicateKey::Comment | PredicateKey::Str | PredicateKey::Import, _) => {
-                        node_text.contains(value)
+                let captured_node = capture.node;
+                let captured_text = captured_node.utf8_text(content.as_bytes())?;
+
+                // Use the correct matching strategy based on the predicate type.
+                let is_match = match key {
+                    // Content-based predicates check for substrings.
+                    PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
+                        captured_text.contains(value)
                     }
-                    // For everything else (defs, funcs, calls), we want an exact match on the identifier, unless the value is a wildcard.
-                    (_, ".") => true,
-                    _ => node_text == value,
+                    // Definition-based predicates require an exact match on the identifier, unless a wildcard is used.
+                    _ => value == "." || captured_text == value,
                 };
 
-                if matched {
-                    ranges.push(capture.node.range());
+                if is_match {
+                    ranges.push(captured_node.range());
                 }
             }
         }
