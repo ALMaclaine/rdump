@@ -49,14 +49,10 @@ pub fn run_lang(action: LangAction) -> Result<()> {
     match action {
         LangAction::List => {
             let profiles = list_language_profiles();
-            println!("{:<12} {}", "NAME", "EXTENSIONS");
+            println!("{:<12} EXTENSIONS", "NAME");
             println!("──────────────────────────");
             for profile in profiles {
-                println!(
-                    "{:<12} {}",
-                    profile.name,
-                    profile.extensions.join(", ")
-                );
+                println!("{:<12} {}", profile.name, profile.extensions.join(", "));
             }
         }
         LangAction::Describe { language } => {
@@ -67,10 +63,14 @@ pub fn run_lang(action: LangAction) -> Result<()> {
                 .find(|p| p.name.to_lowercase() == lang_lower || p.extensions.contains(&lang_lower.as_str()))
                 .ok_or_else(|| anyhow!("Language '{}' not supported. Run `rdump lang list` to see available languages.", language))?;
 
-            println!("Predicates for {} ({})", profile.name, profile.extensions.join(", "));
+            println!(
+                "Predicates for {} ({})",
+                profile.name,
+                profile.extensions.join(", ")
+            );
 
-            let metadata_preds = vec!["ext", "name", "path", "size", "modified"];
-            let content_preds = vec!["contains", "matches"];
+            let metadata_preds = ["ext", "name", "path", "size", "modified"];
+            let content_preds = ["contains", "matches"];
 
             println!("\nMETADATA");
             println!("  {}", metadata_preds.join(", "));
@@ -95,9 +95,9 @@ pub fn run_lang(action: LangAction) -> Result<()> {
 
 // This makes the functions inside search.rs and preset.rs available
 // to other parts of the program that use the `commands` module.
+pub mod lang;
 pub mod preset;
 pub mod search;
-pub mod lang;
 
 
 // END rdump/src/commands/mod.rs
@@ -120,7 +120,7 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
                 println!("Available presets:");
                 let max_len = config.presets.keys().map(|k| k.len()).max().unwrap_or(0);
                 for (name, query) in config.presets {
-                    println!("  {:<width$} : {}", name, query, width = max_len);
+                    println!("  {name:<max_len$} : {query}");
                 }
             }
         }
@@ -135,7 +135,7 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
                 Config::default()
             };
 
-            println!("Adding/updating preset '{}'...", name);
+            println!("Adding/updating preset '{name}'...");
             config.presets.insert(name, query);
             config::save_config(&config)?;
         }
@@ -152,7 +152,7 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
             let mut config: Config = toml::from_str(&fs::read_to_string(&path)?)?;
 
             if config.presets.remove(&name).is_some() {
-                println!("Removing preset '{}'...", name);
+                println!("Removing preset '{name}'...");
                 config::save_config(&config)?;
             } else {
                 return Err(anyhow!("Preset '{}' not found in global config.", name));
@@ -186,6 +186,12 @@ use crate::predicates;
 
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
+    // --- Handle Shorthand Flags ---
+
+    if args.find {
+        args.format = crate::Format::Find;
+    }
+
     // --- Load Config and Build Query ---
     let config = config::load_config()?;
     let mut final_query = args.query.take().unwrap_or_default();
@@ -197,9 +203,9 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
             .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
 
         if final_query.is_empty() {
-            final_query = format!("({})", preset_query);
+            final_query = format!("({preset_query})");
         } else {
-            final_query = format!("({}) & {}", preset_query, final_query);
+            final_query = format!("({preset_query}) & {final_query}");
         }
     }
 
@@ -226,8 +232,8 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         .into_iter() // This pass is not parallel, it's fast enough.
         .filter(|path| {
             let mut context = FileContext::new(path.clone());
-            match pre_filter_evaluator.evaluate(&mut context) {
-                Ok(result) => result.is_match(),
+            match pre_filter_evaluator.pre_filter_evaluate(&mut context) {
+                Ok(is_match) => is_match,
                 Err(e) => {
                     eprintln!("Error during pre-filter on {}: {}", path.display(), e);
                     false
@@ -284,6 +290,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &matching_files,
         &args.format,
         args.line_numbers,
+        args.no_headers,
         use_color,
         args.context.unwrap_or(0),
     )?;
@@ -300,10 +307,18 @@ fn get_candidate_files(
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut walker_builder = WalkBuilder::new(root);
+    walker_builder.git_ignore(true).ignore(false);
 
     walker_builder.hidden(!hidden).max_depth(max_depth);
 
-    if !no_ignore {
+    if no_ignore {
+        // If --no-ignore is passed, disable everything.
+        walker_builder
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    } else {
         // Layer 1: Our "sane defaults". These have the lowest precedence.
         let default_ignores = "
            # Default rdump ignores
@@ -318,14 +333,14 @@ fn get_candidate_files(
            __pycache__/
        ";
         let mut temp_ignore = NamedTempFile::new()?;
-        write!(temp_ignore, "{}", default_ignores)?;
+        write!(temp_ignore, "{default_ignores}")?;
         walker_builder.add_ignore(temp_ignore.path());
 
         // Layer 2: A user's custom global ignore file.
         if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
             if global_ignore_path.exists() {
                 if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
-                    eprintln!("Warning: could not add global ignore file: {}", err);
+                    eprintln!("Warning: could not add global ignore file: {err}");
                 }
             }
         }
@@ -336,14 +351,11 @@ fn get_candidate_files(
         // Layer 4: Standard .gitignore files.
         walker_builder.git_global(true);
         walker_builder.git_ignore(true);
-    } else {
-        // If --no-ignore is passed, disable everything.
-        walker_builder.ignore(false);
     }
 
     for result in walker_builder.build() {
         let entry = result?;
-        if entry.file_type().map_or(false, |ft| ft.is_file()) {
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
             files.push(entry.into_path());
         }
     }
@@ -464,7 +476,7 @@ pub fn load_config() -> Result<Config> {
     if let Some(global_config_path) = global_config_path() {
         if global_config_path.exists() {
             let global_config_str = fs::read_to_string(&global_config_path).with_context(|| {
-                format!("Failed to read global config at {:?}", global_config_path)
+                format!("Failed to read global config at {global_config_path:?}")
             })?;
             let global_config: Config = toml::from_str(&global_config_str)?;
             final_config.presets.extend(global_config.presets);
@@ -475,9 +487,8 @@ pub fn load_config() -> Result<Config> {
     let current_dir = env::current_dir()?;
     if let Some(local_config_path) = find_local_config(&current_dir) {
         if local_config_path.exists() {
-            let local_config_str = fs::read_to_string(&local_config_path).with_context(|| {
-                format!("Failed to read local config at {:?}", local_config_path)
-            })?;
+            let local_config_str = fs::read_to_string(&local_config_path)
+                .with_context(|| format!("Failed to read local config at {local_config_path:?}"))?;
             let local_config: Config = toml::from_str(&local_config_str)?;
             final_config.presets.extend(local_config.presets);
         }
@@ -493,14 +504,14 @@ pub fn save_config(config: &Config) -> Result<()> {
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create config directory at {:?}", parent))?;
+            .with_context(|| format!("Failed to create config directory at {parent:?}"))?;
     }
 
     let toml_string = toml::to_string_pretty(config)?;
     fs::write(&path, toml_string)
-        .with_context(|| format!("Failed to write global config to {:?}", path))?;
+        .with_context(|| format!("Failed to write global config to {path:?}"))?;
 
-    println!("Successfully saved config to {:?}", path);
+    println!("Successfully saved config to {path:?}");
     Ok(())
 }
 
@@ -579,14 +590,12 @@ mod tests {
         assert_eq!(config.presets.len(), 3);
         assert_eq!(config.presets.get("rust").unwrap(), "ext:rs");
         assert_eq!(config.presets.get("scripts").unwrap(), "ext:sh");
-        assert_eq!(
-            config.presets.get("docs").unwrap(),
-            "ext:md | ext:txt"
-        );
+        assert_eq!(config.presets.get("docs").unwrap(), "ext:md | ext:txt");
 
         env::remove_var("RDUMP_TEST_CONFIG_DIR");
     }
 }
+
 
 // END rdump/src/config.rs
 
@@ -596,7 +605,7 @@ use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use tree_sitter::{Parser as TreeSitterParser, Range, Tree};
+use tree_sitter::{Parser, Range, Tree};
 
 use crate::parser::{AstNode, PredicateKey};
 use crate::predicates::PredicateEvaluator;
@@ -642,12 +651,9 @@ impl FileContext {
         if self.tree.is_none() {
             let path_display = self.path.display().to_string();
             let content = self.get_content()?;
-            let mut parser = TreeSitterParser::new();
+            let mut parser = Parser::new();
             parser.set_language(&language).with_context(|| {
-                format!(
-                    "Failed to set language for tree-sitter parser on {}",
-                    path_display
-                )
+                format!("Failed to set language for tree-sitter parser on {path_display}")
             })?;
             let tree = parser
                 .parse(content, None)
@@ -677,44 +683,31 @@ impl Evaluator {
         self.evaluate_node(&self.ast, context)
     }
 
-    /// Recursively evaluates an AST node.
-    fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<MatchResult> {
+    /// Evaluates the query for a given file path, but only for metadata predicates.
+    pub fn pre_filter_evaluate(&self, context: &mut FileContext) -> Result<bool> {
+        self.pre_filter_evaluate_node(&self.ast, context)
+    }
+
+    /// Recursively evaluates an AST node for the pre-filtering pass.
+    fn pre_filter_evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<bool> {
         match node {
-            AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
-            AstNode::LogicalOp(op, left, right) => {
-                match op {
-                    crate::parser::LogicalOperator::And => {
-                        let left_res = self.evaluate_node(left, context)?;
-                        if !left_res.is_match() {
-                            return Ok(MatchResult::Boolean(false));
-                        }
-                        let right_res = self.evaluate_node(right, context)?;
-                        if !right_res.is_match() {
-                            return Ok(MatchResult::Boolean(false));
-                        }
-                        Ok(left_res.combine_with(right_res))
-                    }
-                    crate::parser::LogicalOperator::Or => {
-                        let left_res = self.evaluate_node(left, context)?;
-                        // Short-circuit if we have a non-hunkable, definitive match.
-                        // This prevents expensive evaluation of the right side.
-                        if let MatchResult::Boolean(true) = left_res {
-                            return Ok(left_res);
-                        }
-
-                        let right_res = self.evaluate_node(right, context)?;
-
-                        // Combine the results logically.
-                        if left_res.is_match() && right_res.is_match() {
-                            Ok(left_res.combine_with(right_res))
-                        } else if left_res.is_match() {
-                            Ok(left_res) // right side didn't match
-                        } else {
-                            Ok(right_res) // left side didn't match, so result is right
-                        }
-                    }
+            AstNode::Predicate(key, value) => {
+                if let Some(evaluator) = self.registry.get(key) {
+                    Ok(evaluator.evaluate(context, key, value)?.is_match())
+                } else {
+                    // If a predicate is not in the metadata registry, we can't evaluate it.
+                    // We must assume it *could* match and let the full evaluator decide.
+                    Ok(true)
                 }
             }
+            AstNode::LogicalOp(op, left, right) => match op {
+                crate::parser::LogicalOperator::And => Ok(self
+                    .pre_filter_evaluate_node(left, context)?
+                    && self.pre_filter_evaluate_node(right, context)?),
+                crate::parser::LogicalOperator::Or => Ok(self
+                    .pre_filter_evaluate_node(left, context)?
+                    || self.pre_filter_evaluate_node(right, context)?),
+            },
             AstNode::Not(inner_node) => {
                 // For the pre-filtering pass, if the inner predicate of a NOT is not in the
                 // registry, we cannot definitively say the file *doesn't* match.
@@ -722,10 +715,32 @@ impl Evaluator {
                 // So, we must assume it *could* match and let the full evaluator decide.
                 if let AstNode::Predicate(key, _) = &**inner_node {
                     if !self.registry.contains_key(key) {
-                        return Ok(MatchResult::Boolean(true)); // Pass to the next stage
+                        return Ok(true); // Pass to the next stage
                     }
                 }
-                // Otherwise, evaluate the inner node and negate the result.
+                Ok(!self.pre_filter_evaluate_node(inner_node, context)?)
+            }
+        }
+    }
+
+    /// Recursively evaluates an AST node.
+    fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<MatchResult> {
+        match node {
+            AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
+            AstNode::LogicalOp(op, left, right) => {
+                let left_res = self.evaluate_node(left, context)?;
+                // For OR, if the left side is a full-file match (Boolean(true)), we can short-circuit.
+                if matches!(op, crate::parser::LogicalOperator::Or) {
+                    if let MatchResult::Boolean(true) = left_res {
+                        return Ok(left_res);
+                    }
+                }
+                // For AND, we must evaluate both sides to combine hunks.
+                let right_res = self.evaluate_node(right, context)?;
+                Ok(left_res.combine_with(right_res, op))
+            }
+            AstNode::Not(inner_node) => {
+                // Evaluate the inner node and negate the result.
                 let result = self.evaluate_node(inner_node, context)?;
                 Ok(MatchResult::Boolean(!result.is_match()))
             }
@@ -760,19 +775,71 @@ impl MatchResult {
     }
 
     /// Combines two successful match results.
-    pub fn combine_with(self, other: MatchResult) -> Self {
-        match (self, other) {
-            (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                a.extend(b);
-                a.sort_by_key(|r| r.start_byte);
-                a.dedup();
-                MatchResult::Hunks(a)
+    pub fn combine_with(self, other: MatchResult, op: &crate::parser::LogicalOperator) -> Self {
+        match op {
+            crate::parser::LogicalOperator::And => {
+                if !self.is_match() || !other.is_match() {
+                    return MatchResult::Boolean(false);
+                }
+                match (self, other) {
+                    // Both are Hunks: The AND is only true if both have matches.
+                    // If so, the result is the *union* of the hunks, not the intersection.
+                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                        if a.is_empty() || b.is_empty() {
+                            return MatchResult::Boolean(false);
+                        }
+                        a.extend(b);
+                        a.sort_by_key(|r| r.start_byte);
+                        a.dedup();
+                        MatchResult::Hunks(a)
+                    }
+                    // One is Hunks, the other is a full-file match: The result is the Hunks.
+                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(true)) => h,
+                    (MatchResult::Boolean(true), h @ MatchResult::Hunks(_)) => h,
+                    // Both are full-file matches.
+                    (MatchResult::Boolean(true), MatchResult::Boolean(true)) => {
+                        MatchResult::Boolean(true)
+                    }
+                    // Any other combination is a non-match.
+                    _ => MatchResult::Boolean(false),
+                }
             }
-            (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
-            (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
-            (MatchResult::Boolean(_), MatchResult::Boolean(_)) => MatchResult::Boolean(true),
+            crate::parser::LogicalOperator::Or => {
+                if !self.is_match() && !other.is_match() {
+                    return MatchResult::Boolean(false);
+                }
+                if !self.is_match() {
+                    return other;
+                }
+                if !other.is_match() {
+                    return self;
+                }
+
+                match (self, other) {
+                    // Both are Hunks: Union them.
+                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                        a.extend(b);
+                        a.sort_by_key(|r| r.start_byte);
+                        a.dedup();
+                        MatchResult::Hunks(a)
+                    }
+                    // If either is a full-file match, the result is a full-file match.
+                    (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => {
+                        MatchResult::Boolean(true)
+                    }
+                    // One is Hunks, the other is a non-matching Boolean: The result is the Hunks.
+                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
+                    (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
+                    // Should be unreachable given the checks above.
+                    _ => MatchResult::Boolean(false),
+                }
+            }
         }
     }
+
+    // fn hunks_overlap(a: &Range, b: &Range) -> bool {
+    //     a.start_byte < b.end_byte && b.start_byte < a.end_byte
+    // }
 }
 
 #[cfg(test)]
@@ -808,10 +875,7 @@ mod tests {
 
         let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail
-            .evaluate(&mut context)
-            .unwrap()
-            .is_match());
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
     }
 
     #[test]
@@ -824,10 +888,7 @@ mod tests {
 
         let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail
-            .evaluate(&mut context)
-            .unwrap()
-            .is_match());
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
     }
 
     #[test]
@@ -840,10 +901,32 @@ mod tests {
 
         let ast_fail = parse_query("!contains:hello").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail
-            .evaluate(&mut context)
-            .unwrap()
-            .is_match());
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+    }
+
+    #[test]
+    fn test_combine_with_hunks_intersection() {
+        let hunks1 = vec![tree_sitter::Range {
+            start_byte: 10,
+            end_byte: 20,
+            start_point: Default::default(),
+            end_point: Default::default(),
+        }];
+        let hunks2 = vec![tree_sitter::Range {
+            start_byte: 15,
+            end_byte: 25,
+            start_point: Default::default(),
+            end_point: Default::default(),
+        }];
+        let result1 = MatchResult::Hunks(hunks1);
+        let result2 = MatchResult::Hunks(hunks2);
+        let combined = result1.combine_with(result2, &crate::parser::LogicalOperator::And);
+        assert!(combined.is_match());
+        if let MatchResult::Hunks(hunks) = combined {
+            assert_eq!(hunks.len(), 2);
+        } else {
+            panic!("Expected Hunks result");
+        }
     }
 }
 
@@ -881,133 +964,202 @@ struct FileOutput {
     content: String,
 }
 
-/// Formats and prints the final output to a generic writer based on the chosen format.
-pub fn print_output(
+fn print_markdown_format(
     writer: &mut impl Write,
     matching_files: &[(PathBuf, Vec<Range>)],
-    format: &Format,
     with_line_numbers: bool,
+    with_headers: bool,
+    use_color: bool,
+) -> Result<()> {
+    for (i, (path, _)) in matching_files.iter().enumerate() {
+        if with_headers {
+            if i > 0 {
+                writeln!(writer, "\n---\n")?;
+            }
+            writeln!(writer, "File: {}", path.display())?;
+            writeln!(writer, "---")?;
+        }
+        let content = fs::read_to_string(path)?;
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+        if use_color {
+            // To terminal: use ANSI codes for color
+            print_highlighted_content(writer, &content, extension, with_line_numbers, 0)?;
+        } else {
+            // To file/pipe: use Markdown fences for color
+            print_markdown_fenced_content(writer, &content, extension, with_line_numbers, 0)?;
+        }
+    }
+    Ok(())
+}
+
+fn print_cat_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+    with_line_numbers: bool,
+    use_color: bool,
+) -> Result<()> {
+    for (path, _) in matching_files {
+        let content = fs::read_to_string(path)?;
+        if use_color {
+            // To terminal
+            print_highlighted_content(
+                writer,
+                &content,
+                path.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                with_line_numbers,
+                0,
+            )?;
+        } else {
+            print_plain_content(writer, &content, with_line_numbers, 0)?; // To file/pipe
+        }
+    }
+    Ok(())
+}
+
+fn print_json_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+) -> Result<()> {
+    let mut outputs = Vec::new();
+    for (path, _) in matching_files {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
+        outputs.push(FileOutput {
+            path: path.to_string_lossy().to_string(),
+            content,
+        });
+    }
+    // Use to_writer_pretty for readable JSON output
+    serde_json::to_writer_pretty(writer, &outputs)?;
+    Ok(())
+}
+
+fn print_paths_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+) -> Result<()> {
+    for (path, _) in matching_files {
+        writeln!(writer, "{}", path.display())?;
+    }
+    Ok(())
+}
+
+fn print_find_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+) -> Result<()> {
+    for (path, _) in matching_files {
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
+        let size = metadata.len();
+        let modified: DateTime<Local> = DateTime::from(metadata.modified()?);
+
+        // Get permissions (basic implementation)
+        let perms = metadata.permissions();
+        #[cfg(unix)]
+        let mode = perms.mode();
+        #[cfg(not(unix))]
+        let mode = 0; // Placeholder for non-unix
+        let perms_str = format_mode(mode);
+
+        // Format size into human-readable string
+        let size_str = format_size(size);
+
+        // Format time
+        let time_str = modified.format("%b %d %H:%M").to_string();
+
+        writeln!(
+            writer,
+            "{:<12} {:>8} {} {}",
+            perms_str,
+            size_str,
+            time_str,
+            path.display()
+        )?;
+    }
+    Ok(())
+}
+
+fn print_hunks_format(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+    with_line_numbers: bool,
+    with_headers: bool,
     use_color: bool,
     context_lines: usize,
 ) -> Result<()> {
-    match format {
-        Format::Find => {
-            for (path, _) in matching_files {
-                let metadata = fs::metadata(path)
-                    .with_context(|| format!("Failed to read metadata for {}", path.display()))?;
-                let size = metadata.len();
-                let modified: DateTime<Local> = DateTime::from(metadata.modified()?);
+    for (i, (path, hunks)) in matching_files.iter().enumerate() {
+        if with_headers {
+            if i > 0 {
+                writeln!(writer, "\n---\n")?;
+            }
+            writeln!(writer, "File: {}", path.display())?;
+            writeln!(writer, "---")?;
+        }
+        let content = fs::read_to_string(path)?;
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-                // Get permissions (basic implementation)
-                let perms = metadata.permissions();
-                #[cfg(unix)]
-                let mode = perms.mode();
-                #[cfg(not(unix))]
-                let mode = 0; // Placeholder for non-unix
-                let perms_str = format_mode(mode);
+        if hunks.is_empty() {
+            // Boolean match, print the whole file
+            print_content_with_style(writer, &content, extension, with_line_numbers, use_color, 0)?;
+        } else {
+            // Hunk match, print with context
+            let lines: Vec<&str> = LinesWithEndings::from(&content).collect();
+            let line_ranges = get_contextual_line_ranges(hunks, &lines, context_lines);
 
-                // Format size into human-readable string
-                let size_str = format_size(size);
-
-                // Format time
-                let time_str = modified.format("%b %d %H:%M").to_string();
-
-                writeln!(
+            for (i, range) in line_ranges.iter().enumerate() {
+                if i > 0 {
+                    writeln!(writer, "...")?;
+                }
+                let hunk_content = lines[range.clone()].join("");
+                print_content_with_style(
                     writer,
-                    "{:<12} {:>8} {} {}",
-                    perms_str,
-                    size_str,
-                    time_str,
-                    path.display()
+                    &hunk_content,
+                    extension,
+                    with_line_numbers,
+                    use_color,
+                    range.start,
                 )?;
-            }
-        }
-        Format::Paths => {
-            for (path, _) in matching_files {
-                writeln!(writer, "{}", path.display())?;
-            }
-        }
-        Format::Json => {
-            let mut outputs = Vec::new();
-            for (path, _) in matching_files {
-                let content = fs::read_to_string(path).with_context(|| {
-                    format!("Failed to read file for final output: {}", path.display())
-                })?;
-                outputs.push(FileOutput {
-                    path: path.to_string_lossy().to_string(),
-                    content,
-                });
-            }
-            // Use to_writer_pretty for readable JSON output
-            serde_json::to_writer_pretty(writer, &outputs)?;
-        }
-        Format::Cat => {
-            for (path, _) in matching_files {
-                let content = fs::read_to_string(path)?;
-                if use_color {
-                    // To terminal
-                    print_highlighted_content(
-                        writer,
-                        &content,
-                        &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
-                        with_line_numbers,
-                    )?;
-                } else {
-                    print_plain_content(writer, &content, with_line_numbers)?; // To file/pipe
-                }
-            }
-        }
-        Format::Markdown => {
-            for (i, (path, _)) in matching_files.iter().enumerate() {
-                if i > 0 {
-                    writeln!(writer, "\n---\n")?;
-                }
-                writeln!(writer, "File: {}", path.display())?;
-                writeln!(writer, "---")?;
-                let content = fs::read_to_string(path)?;
-                let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-                if use_color {
-                    // To terminal: use ANSI codes for color
-                    print_highlighted_content(writer, &content, extension, with_line_numbers)?;
-                } else {
-                    // To file/pipe: use Markdown fences for color
-                    print_markdown_fenced_content(writer, &content, extension, with_line_numbers)?;
-                }
-            }
-        }
-        Format::Hunks => {
-            for (i, (path, hunks)) in matching_files.iter().enumerate() {
-                if i > 0 {
-                    writeln!(writer, "\n---\n")?;
-                }
-                writeln!(writer, "File: {}", path.display())?;
-                writeln!(writer, "---")?;
-                let content = fs::read_to_string(path)?;
-                let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-                if hunks.is_empty() {
-                    // Boolean match, print the whole file
-                    print_content_with_style(writer, &content, extension, with_line_numbers, use_color)?;
-                } else {
-                    // Hunk match, print with context
-                    let lines: Vec<&str> = content.lines().collect();
-                    let line_ranges = get_contextual_line_ranges(hunks, &lines, context_lines);
-
-                    for (i, range) in line_ranges.iter().enumerate() {
-                        if i > 0 {
-                            writeln!(writer, "...")?;
-                        }
-                        let hunk_content = lines[range.clone()].join("\n");
-                        print_content_with_style(writer, &hunk_content, extension, with_line_numbers, use_color)?;
-                    }
-                }
             }
         }
     }
     Ok(())
 }
 
+/// Formats and prints the final output to a generic writer based on the chosen format.
+pub fn print_output(
+    writer: &mut impl Write,
+    matching_files: &[(PathBuf, Vec<Range>)],
+    format: &Format,
+    with_line_numbers: bool,
+    no_headers: bool,
+    use_color: bool,
+    context_lines: usize,
+) -> Result<()> {
+    match format {
+        Format::Find => print_find_format(writer, matching_files)?,
+        Format::Paths => print_paths_format(writer, matching_files)?,
+        Format::Json => print_json_format(writer, matching_files)?,
+        Format::Cat => print_cat_format(writer, matching_files, with_line_numbers, use_color)?,
+        Format::Markdown => print_markdown_format(
+            writer,
+            matching_files,
+            with_line_numbers,
+            !no_headers,
+            use_color,
+        )?,
+        Format::Hunks => print_hunks_format(
+            writer,
+            matching_files,
+            with_line_numbers,
+            !no_headers,
+            use_color,
+            context_lines,
+        )?,
+    }
+    Ok(())
+}
 
 /// Helper to choose the correct printing function based on color/style preference.
 fn print_content_with_style(
@@ -1016,11 +1168,24 @@ fn print_content_with_style(
     extension: &str,
     with_line_numbers: bool,
     use_color: bool,
+    start_line_number: usize,
 ) -> Result<()> {
     if use_color {
-        print_highlighted_content(writer, content, extension, with_line_numbers)
+        print_highlighted_content(
+            writer,
+            content,
+            extension,
+            with_line_numbers,
+            start_line_number,
+        )
     } else {
-        print_markdown_fenced_content(writer, content, extension, with_line_numbers)
+        print_markdown_fenced_content(
+            writer,
+            content,
+            extension,
+            with_line_numbers,
+            start_line_number,
+        )
     }
 }
 
@@ -1066,13 +1231,13 @@ fn get_contextual_line_ranges(
     merged_ranges
 }
 
-
 /// Prints syntax-highlighted content to the writer.
 fn print_highlighted_content(
     writer: &mut impl Write,
     content: &str,
     extension: &str,
     with_line_numbers: bool,
+    start_line_number: usize,
 ) -> Result<()> {
     let syntax = SYNTAX_SET
         .find_syntax_by_extension(extension)
@@ -1083,11 +1248,11 @@ fn print_highlighted_content(
 
     for (i, line) in LinesWithEndings::from(content).enumerate() {
         if with_line_numbers {
-            write!(writer, "{: >5} | ", i + 1)?;
+            write!(writer, "{: >5} | ", start_line_number + i + 1)?;
         }
         let ranges: Vec<(Style, &str)> = highlighter.highlight_line(line, &SYNTAX_SET)?;
         let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-        write!(writer, "{}", escaped)?;
+        write!(writer, "{escaped}")?;
     }
     // Reset color at the end
     write!(writer, "\x1b[0m")?;
@@ -1099,12 +1264,13 @@ fn print_plain_content(
     writer: &mut impl Write,
     content: &str,
     with_line_numbers: bool,
+    start_line_number: usize,
 ) -> Result<()> {
     for (i, line) in content.lines().enumerate() {
         if with_line_numbers {
-            writeln!(writer, "{: >5} | {}", i + 1, line)?;
+            writeln!(writer, "{: >5} | {}", start_line_number + i + 1, line)?;
         } else {
-            writeln!(writer, "{}", line)?;
+            writeln!(writer, "{line}")?;
         }
     }
     Ok(())
@@ -1116,10 +1282,11 @@ fn print_markdown_fenced_content(
     content: &str,
     extension: &str,
     with_line_numbers: bool,
+    start_line_number: usize,
 ) -> Result<()> {
-    writeln!(writer, "```{}", extension)?;
+    writeln!(writer, "```{extension}")?;
     // print_plain_content handles line numbers correctly
-    print_plain_content(writer, content, with_line_numbers)?;
+    print_plain_content(writer, content, with_line_numbers, start_line_number)?;
     writeln!(writer, "```")?;
     Ok(())
 }
@@ -1136,10 +1303,7 @@ fn format_mode(mode: u32) -> String {
         let other_r = if mode & 0o004 != 0 { 'r' } else { '-' };
         let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
         let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
-        format!(
-            "-{}{}{}{}{}{}{}{}{}",
-            user_r, user_w, user_x, group_r, group_w, group_x, other_r, other_w, other_x
-        )
+        format!("-{user_r}{user_w}{user_x}{group_r}{group_w}{group_x}{other_r}{other_w}{other_x}")
     }
     #[cfg(not(unix))]
     {
@@ -1165,7 +1329,7 @@ fn format_size(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.1}K", bytes as f64 / KB as f64)
     } else {
-        format!("{}B", bytes)
+        format!("{bytes}B")
     }
 }
 
@@ -1187,7 +1351,7 @@ mod tests {
         let file = create_temp_file_with_content("a\nb");
         let paths = vec![(file.path().to_path_buf(), vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, true, false, 0).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, true, false, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         assert_eq!(output, "    1 | a\n    2 | b\n");
     }
@@ -1201,7 +1365,7 @@ mod tests {
             (file2.path().to_path_buf(), vec![]),
         ];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Paths, false, false, 0).unwrap();
+        print_output(&mut writer, &paths, &Format::Paths, false, false, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         let expected = format!("{}\n{}\n", file1.path().display(), file2.path().display());
         assert_eq!(output, expected);
@@ -1214,7 +1378,16 @@ mod tests {
         let mut writer = Vec::new();
 
         // Test with use_color = false to get markdown fences
-        print_output(&mut writer, &paths, &Format::Markdown, false, false, 0).unwrap();
+        print_output(
+            &mut writer,
+            &paths,
+            &Format::Markdown,
+            false,
+            false,
+            false,
+            0,
+        )
+        .unwrap();
 
         let output = String::from_utf8(writer).unwrap();
 
@@ -1233,15 +1406,15 @@ mod tests {
 
         let paths = vec![(rs_path, vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, false, true, 0).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, false, false, true, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
 
         // Check for evidence of ANSI color, not the exact codes which can be brittle.
+        assert!(output.contains("\x1b["), "Should contain ANSI escape codes");
         assert!(
-            output.contains("\x1b["),
-            "Should contain ANSI escape codes"
+            !output.contains("```"),
+            "Should not contain markdown fences"
         );
-        assert!(!output.contains("```"), "Should not contain markdown fences");
     }
 }
 
@@ -1355,9 +1528,13 @@ pub struct SearchArgs {
     pub color: ColorChoice,
     #[arg(long)]
     pub max_depth: Option<usize>,
-    #[arg(long, short = 'C', value_name = "LINES", help = "Show LINES of context around matches for --format=hunks")]
+    #[arg(
+        long,
+        short = 'C',
+        value_name = "LINES",
+        help = "Show LINES of context around matches for --format=hunks"
+    )]
     pub context: Option<usize>,
-
 
     /// List files with metadata instead of dumping content.
     #[arg(long)]
@@ -1424,16 +1601,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Search(mut args) => {
-            // --- Handle Shorthand Flags ---
-            if args.no_headers {
-                args.format = Format::Cat;
-            }
-            if args.find {
-                args.format = Format::Find;
-            }
-            run_search(args)
-        }
+        Commands::Search(args) => run_search(args),
         Commands::Lang(args) => {
             // Default to `list` if no subcommand is given for `lang`
             let action = args.action.unwrap_or(LangAction::List);
@@ -1442,6 +1610,7 @@ fn main() -> Result<()> {
         Commands::Preset(args) => run_preset(args.action),
     }
 }
+
 
 // END rdump/src/main.rs
 
@@ -1480,37 +1649,37 @@ pub enum PredicateKey {
     // Syntactic Content
     Comment,
     Str,
-   // Usage
-   Call,
+    // Usage
+    Call,
     // A key for testing or unknown predicates
     Other(String),
 }
 
 impl AsRef<str> for PredicateKey {
-   fn as_ref(&self) -> &str {
-       match self {
-           PredicateKey::Ext => "ext",
-           PredicateKey::Name => "name",
-           PredicateKey::Path => "path",
-           PredicateKey::Contains => "contains",
-           PredicateKey::Matches => "matches",
-           PredicateKey::Size => "size",
-           PredicateKey::Modified => "modified",
-           PredicateKey::Def => "def",
-           PredicateKey::Func => "func",
-           PredicateKey::Import => "import",
-           PredicateKey::Class => "class",
-           PredicateKey::Struct => "struct",
-           PredicateKey::Enum => "enum",
-           PredicateKey::Interface => "interface",
-           PredicateKey::Trait => "trait",
-           PredicateKey::Type => "type",
-           PredicateKey::Comment => "comment",
-           PredicateKey::Str => "str",
-           PredicateKey::Call => "call",
-           PredicateKey::Other(s) => s.as_str(),
-       }
-   }
+    fn as_ref(&self) -> &str {
+        match self {
+            PredicateKey::Ext => "ext",
+            PredicateKey::Name => "name",
+            PredicateKey::Path => "path",
+            PredicateKey::Contains => "contains",
+            PredicateKey::Matches => "matches",
+            PredicateKey::Size => "size",
+            PredicateKey::Modified => "modified",
+            PredicateKey::Def => "def",
+            PredicateKey::Func => "func",
+            PredicateKey::Import => "import",
+            PredicateKey::Class => "class",
+            PredicateKey::Struct => "struct",
+            PredicateKey::Enum => "enum",
+            PredicateKey::Interface => "interface",
+            PredicateKey::Trait => "trait",
+            PredicateKey::Type => "type",
+            PredicateKey::Comment => "comment",
+            PredicateKey::Str => "str",
+            PredicateKey::Call => "call",
+            PredicateKey::Other(s) => s.as_str(),
+        }
+    }
 }
 
 impl From<&str> for PredicateKey {
@@ -1535,7 +1704,7 @@ impl From<&str> for PredicateKey {
             "type" => Self::Type,
             "comment" => Self::Comment,
             "str" => Self::Str,
-           "call" => Self::Call,
+            "call" => Self::Call,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
@@ -1556,18 +1725,18 @@ pub enum LogicalOperator {
 }
 
 pub fn parse_query(query: &str) -> Result<AstNode> {
-   // Check for empty or whitespace-only queries BEFORE parsing.
-   if query.trim().is_empty() {
-       return Err(anyhow!("Query cannot be empty."));
-   }
+    // Check for empty or whitespace-only queries BEFORE parsing.
+    if query.trim().is_empty() {
+        return Err(anyhow!("Query cannot be empty."));
+    }
 
-   match RqlParser::parse(Rule::query, query) {
-       Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
-       Err(e) => {
-           // Re-format the pest error to be more user-friendly.
-           Err(anyhow!("Invalid query syntax:\n{}", e))
-       }
-   }
+    match RqlParser::parse(Rule::query, query) {
+        Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
+        Err(e) => {
+            // Re-format the pest error to be more user-friendly.
+            Err(anyhow!("Invalid query syntax:\n{}", e))
+        }
+    }
 }
 
 fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
@@ -1735,49 +1904,65 @@ mod tests {
         assert_eq!(ast_import, *predicate(PredicateKey::Import, "serde"));
     }
 
-   #[test]
-   fn test_parse_granular_and_syntactic_predicates() {
-       assert_eq!(parse_query("class:Foo").unwrap(), *predicate(PredicateKey::Class, "Foo"));
-       assert_eq!(parse_query("struct:Bar").unwrap(), *predicate(PredicateKey::Struct, "Bar"));
-       assert_eq!(parse_query("comment:TODO").unwrap(), *predicate(PredicateKey::Comment, "TODO"));
-       assert_eq!(parse_query("str:'api_key'").unwrap(), *predicate(PredicateKey::Str, "api_key"));
-       assert_eq!(parse_query("call:my_func").unwrap(), *predicate(PredicateKey::Call, "my_func"));
-   }
+    #[test]
+    fn test_parse_granular_and_syntactic_predicates() {
+        assert_eq!(
+            parse_query("class:Foo").unwrap(),
+            *predicate(PredicateKey::Class, "Foo")
+        );
+        assert_eq!(
+            parse_query("struct:Bar").unwrap(),
+            *predicate(PredicateKey::Struct, "Bar")
+        );
+        assert_eq!(
+            parse_query("comment:TODO").unwrap(),
+            *predicate(PredicateKey::Comment, "TODO")
+        );
+        assert_eq!(
+            parse_query("str:'api_key'").unwrap(),
+            *predicate(PredicateKey::Str, "api_key")
+        );
+        assert_eq!(
+            parse_query("call:my_func").unwrap(),
+            *predicate(PredicateKey::Call, "my_func")
+        );
+    }
 
-   #[test]
-   fn test_error_on_trailing_operator() {
-       let result = parse_query("ext:rs &");
-       let err = result.unwrap_err();
-       assert!(err.to_string().contains("Invalid query syntax:"));
-       assert!(err.to_string().contains("expected")); // Pest's pointer is still useful
-   }
+    #[test]
+    fn test_error_on_trailing_operator() {
+        let result = parse_query("ext:rs &");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid query syntax:"));
+        assert!(err.to_string().contains("expected")); // Pest's pointer is still useful
+    }
 
-   #[test]
-   fn test_error_on_missing_value() {
-       let result = parse_query("ext:");
-       let err = result.unwrap_err();
-       assert!(err.to_string().contains("Invalid query syntax:"));
-   }
+    #[test]
+    fn test_error_on_missing_value() {
+        let result = parse_query("ext:");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid query syntax:"));
+    }
 
-   #[test]
-   fn test_error_on_unclosed_parenthesis() {
-       let result = parse_query("(ext:rs | path:src");
-       let err = result.unwrap_err();
-       assert!(err.to_string().contains("Invalid query syntax:"));
-   }
+    #[test]
+    fn test_error_on_unclosed_parenthesis() {
+        let result = parse_query("(ext:rs | path:src");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid query syntax:"));
+    }
 
-   #[test]
-   fn test_error_on_empty_query() {
-       let result = parse_query("");
-       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
-   }
+    #[test]
+    fn test_error_on_empty_query() {
+        let result = parse_query("");
+        assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
+    }
 
-   #[test]
-   fn test_error_on_whitespace_query() {
-       let result = parse_query("   ");
-       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
-   }
+    #[test]
+    fn test_error_on_whitespace_query() {
+        let result = parse_query("   ");
+        assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
+    }
 }
+
 
 // END rdump/src/parser.rs
 
@@ -1786,7 +1971,7 @@ mod tests {
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use crate::predicates::PredicateEvaluator;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use tree_sitter::{Query, QueryCursor};
 
 pub mod profiles;
@@ -1796,7 +1981,12 @@ pub mod profiles;
 pub struct CodeAwareEvaluator;
 
 impl PredicateEvaluator for CodeAwareEvaluator {
-    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<MatchResult> {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
         // 1. Determine the language from the file extension.
         let extension = context
             .path
@@ -1818,11 +2008,21 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         // 3. Get content and lazily get the parsed tree from the file context.
         // We get content first to avoid mutable/immutable borrow issues with context.
         let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
-        let tree = context.get_tree(profile.language.clone())?;
+        let tree = match context.get_tree(profile.language.clone()) {
+            Ok(tree) => tree,
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to parse {}: {}. Skipping.",
+                    context.path.display(),
+                    e
+                );
+                return Ok(MatchResult::Boolean(false));
+            }
+        };
 
         // 4. Compile the tree-sitter query.
         let query = Query::new(&profile.language, ts_query_str)
-            .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
+            .with_context(|| format!("Failed to compile tree-sitter query for key {key:?}"))?;
         let mut cursor = QueryCursor::new();
         let mut ranges = Vec::new();
 
@@ -1832,24 +2032,23 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         for m in captures {
             for capture in m.captures {
                 // We only care about nodes captured with the name `@match`.
-                let capture_name = &query.capture_names()[capture.index as usize];
-                if *capture_name == "match" {
-                    let captured_node = capture.node;
-                    let captured_text = captured_node.utf8_text(content.as_bytes())?;
+                let _capture_name = &query.capture_names()[capture.index as usize];
+                let node_text = content
+                    .get(capture.node.byte_range())
+                    .ok_or_else(|| anyhow!("Failed to get text for node"))?;
 
-                    // Use the correct matching strategy based on the predicate type.
-                   let is_match = match key {
-                       // Content-based predicates check for substrings.
-                       PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
-                           captured_text.contains(value)
-                       }
-                       // Definition-based predicates require an exact match on the identifier.
-                       _ => captured_text == value,
-                   };
-
-                    if is_match {
-                       ranges.push(captured_node.range());
+                let matched = match (key, value) {
+                    // For comments and strings, we check for substrings.
+                    (PredicateKey::Comment | PredicateKey::Str | PredicateKey::Import, _) => {
+                        node_text.contains(value)
                     }
+                    // For everything else (defs, funcs, calls), we want an exact match on the identifier, unless the value is a wildcard.
+                    (_, ".") => true,
+                    _ => node_text == value,
+                };
+
+                if matched {
+                    ranges.push(capture.node.range());
                 }
             }
         }
@@ -1876,8 +2075,10 @@ pub(super) fn create_go_profile() -> LanguageProfile {
     let func_query = "[ (function_declaration name: (identifier) @match) (method_declaration name: (field_identifier) @match) ]";
 
     // --- Definitions ---
-    let struct_query = "(type_declaration (type_spec name: (type_identifier) @match type: (struct_type)))";
-    let interface_query = "(type_declaration (type_spec name: (type_identifier) @match type: (interface_type)))";
+    let struct_query =
+        "(type_declaration (type_spec name: (type_identifier) @match type: (struct_type)))";
+    let interface_query =
+        "(type_declaration (type_spec name: (type_identifier) @match type: (interface_type)))";
 
     queries.insert(PredicateKey::Def, [type_query, func_query].join("\n"));
     queries.insert(PredicateKey::Struct, struct_query.to_string());
@@ -1889,9 +2090,15 @@ pub(super) fn create_go_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Call, "(call_expression function: [ (identifier) @match (selector_expression field: (field_identifier) @match) ])".to_string());
 
     // --- Other ---
-    queries.insert(PredicateKey::Import, "(import_declaration) @match".to_string());
+    queries.insert(
+        PredicateKey::Import,
+        "(import_declaration) @match".to_string(),
+    );
     queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
-    queries.insert(PredicateKey::Str, "[ (interpreted_string_literal) @match (raw_string_literal) @match ]".to_string());
+    queries.insert(
+        PredicateKey::Str,
+        "[ (interpreted_string_literal) @match (raw_string_literal) @match ]".to_string(),
+    );
 
     LanguageProfile {
         name: "Go",
@@ -1900,6 +2107,7 @@ pub(super) fn create_go_profile() -> LanguageProfile {
         queries,
     }
 }
+
 
 // END rdump/src/predicates/code_aware/profiles/go.rs
 
@@ -1919,7 +2127,10 @@ pub(super) fn create_java_profile() -> LanguageProfile {
     let interface_query = "(interface_declaration name: (identifier) @match)";
     let enum_query = "(enum_declaration name: (identifier) @match)";
 
-    queries.insert(PredicateKey::Def, format!("[ {} {} {} ]", class_query, interface_query, enum_query));
+    queries.insert(
+        PredicateKey::Def,
+        format!("[ {class_query} {interface_query} {enum_query} ]"),
+    );
     queries.insert(PredicateKey::Class, class_query.to_string());
     queries.insert(PredicateKey::Interface, interface_query.to_string());
     queries.insert(PredicateKey::Enum, enum_query.to_string());
@@ -1929,8 +2140,14 @@ pub(super) fn create_java_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Call, "[ (method_invocation name: (identifier) @match) (object_creation_expression type: (type_identifier) @match) ]".to_string());
 
     // --- Other ---
-    queries.insert(PredicateKey::Import, "(import_declaration) @match".to_string());
-    queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
+    queries.insert(
+        PredicateKey::Import,
+        "(import_declaration) @match".to_string(),
+    );
+    queries.insert(
+        PredicateKey::Comment,
+        "[(line_comment) @match (block_comment) @match]".to_string(),
+    );
     queries.insert(PredicateKey::Str, "(string_literal) @match".to_string());
 
     LanguageProfile {
@@ -1966,13 +2183,19 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
         PredicateKey::Import,
         "(import_statement) @match".to_string(),
     );
-   queries.insert(
+    queries.insert(
        PredicateKey::Call,
        "[ (call_expression function: [ (identifier) @match (member_expression property: (property_identifier) @match) ]) (new_expression constructor: (identifier) @match) ]".to_string()
    );
 
-   queries.insert(PredicateKey::Comment, "[(comment) @match (regex) @match]".to_string()); // JS Regexes are basically comments
-   queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());
+    queries.insert(
+        PredicateKey::Comment,
+        "[(comment) @match (regex) @match]".to_string(),
+    ); // JS Regexes are basically comments
+    queries.insert(
+        PredicateKey::Str,
+        "[(string) @match (template_string) @match]".to_string(),
+    );
 
     LanguageProfile {
         name: "JavaScript",
@@ -1981,6 +2204,7 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
         queries,
     }
 }
+
 
 // END rdump/src/predicates/code_aware/profiles/javascript.rs
 
@@ -2055,10 +2279,10 @@ pub(super) fn create_python_profile() -> LanguageProfile {
         .to_string(),
     );
 
-   // Query for function and method call sites.
-   queries.insert(
-       PredicateKey::Call,
-       "
+    // Query for function and method call sites.
+    queries.insert(
+        PredicateKey::Call,
+        "
        (call
            function: [
                (identifier) @match
@@ -2066,8 +2290,8 @@ pub(super) fn create_python_profile() -> LanguageProfile {
            ]
        )
        "
-       .to_string(),
-   );
+        .to_string(),
+    );
 
     queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
     queries.insert(PredicateKey::Str, "(string) @match".to_string());
@@ -2079,6 +2303,7 @@ pub(super) fn create_python_profile() -> LanguageProfile {
         queries,
     }
 }
+
 
 // END rdump/src/predicates/code_aware/profiles/python.rs
 
@@ -2125,10 +2350,10 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
         .to_string(),
     );
 
-   // Query for function and method call sites.
-   queries.insert(
-       PredicateKey::Call,
-       "
+    // Query for function and method call sites.
+    queries.insert(
+        PredicateKey::Call,
+        "
        (call_expression
            function: [
                (identifier) @match
@@ -2137,11 +2362,17 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
        )
        (macro_invocation macro: (identifier) @match)
        "
-       .to_string(),
-   );
+        .to_string(),
+    );
 
-    queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
-    queries.insert(PredicateKey::Str, "[(string_literal) @match (raw_string_literal) @match]".to_string());
+    queries.insert(
+        PredicateKey::Comment,
+        "[(line_comment) @match (block_comment) @match]".to_string(),
+    );
+    queries.insert(
+        PredicateKey::Str,
+        "[(string_literal) @match (raw_string_literal) @match]".to_string(),
+    );
 
     LanguageProfile {
         name: "Rust",
@@ -2150,6 +2381,7 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
         queries,
     }
 }
+
 
 // END rdump/src/predicates/code_aware/profiles/rust.rs
 
@@ -2182,13 +2414,16 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
         PredicateKey::Import,
         "(import_statement) @match".to_string(),
     );
-   queries.insert(
+    queries.insert(
        PredicateKey::Call,
        "[ (call_expression function: [ (identifier) @match (member_expression property: (property_identifier) @match) ]) (new_expression constructor: [ (identifier) @match (type_identifier) @match ]) ]".to_string()
    );
 
-   queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
-   queries.insert(PredicateKey::Str, "[(string) @match (template_string) @match]".to_string());
+    queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
+    queries.insert(
+        PredicateKey::Str,
+        "[(string) @match (template_string) @match]".to_string(),
+    );
 
     LanguageProfile {
         name: "TypeScript",
@@ -2198,6 +2433,7 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
     }
 }
 
+
 // END rdump/src/predicates/code_aware/profiles/typescript.rs
 
 // START rdump/src/predicates/contains.rs
@@ -2206,6 +2442,7 @@ use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
+use tree_sitter::Range;
 
 pub(super) struct ContainsEvaluator;
 
@@ -2217,7 +2454,24 @@ impl PredicateEvaluator for ContainsEvaluator {
         value: &str,
     ) -> Result<MatchResult> {
         let content = context.get_content()?;
-        Ok(MatchResult::Boolean(content.contains(value)))
+        let mut ranges = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            if line.contains(value) {
+                let start_byte = content.lines().take(i).map(|l| l.len() + 1).sum();
+                let end_byte = start_byte + line.len();
+                let range = Range {
+                    start_byte,
+                    end_byte,
+                    start_point: tree_sitter::Point { row: i, column: 0 },
+                    end_point: tree_sitter::Point {
+                        row: i,
+                        column: line.len(),
+                    },
+                };
+                ranges.push(range);
+            }
+        }
+        Ok(MatchResult::Hunks(ranges))
     }
 }
 
@@ -2329,13 +2583,21 @@ use anyhow::{anyhow, Result};
 use std::time::{Duration, SystemTime};
 
 pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
-    let (op, size_str) = query.split_at(1);
+    let query = query.trim();
+    let (op, size_str) = if query.starts_with(['>', '<', '=']) {
+        query.split_at(1)
+    } else {
+        ("=", query)
+    };
+
     let target_size = size_str
         .trim()
         .to_lowercase()
         .replace("kb", " * 1024")
+        .replace("k", " * 1024")
         .replace("mb", " * 1024 * 1024")
-        .replace("gb", " * 1024 * 1024 * 1024");
+        .replace("gb", " * 1024 * 1024 * 1024")
+        .replace('b', "");
 
     // A simple expression evaluator for "N * N * N..."
     let target_size_bytes = target_size
@@ -2483,12 +2745,18 @@ use std::collections::HashMap;
 // The core trait that all predicate evaluators must implement.
 pub trait PredicateEvaluator {
     // The key is now passed to allow one evaluator to handle multiple predicate types.
-    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<MatchResult>;
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult>;
 }
 
 /// Creates a predicate registry with only the fast, metadata-based predicates.
 /// This is used for the pre-filtering pass.
-pub fn create_metadata_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+pub fn create_metadata_predicate_registry(
+) -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
     let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> =
         HashMap::new();
 
@@ -2502,7 +2770,8 @@ pub fn create_metadata_predicate_registry() -> HashMap<PredicateKey, Box<dyn Pre
 }
 
 /// Creates and populates the complete predicate registry.
-pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+pub fn create_predicate_registry(
+) -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
     // Start with the metadata predicates
     let mut registry = create_metadata_predicate_registry();
 
@@ -2946,6 +3215,7 @@ def process_data():
     }
 }
 
+
 // END rdump/src/predicates/mod.rs
 
 // START rdump/src/predicates/modified.rs
@@ -3011,6 +3281,7 @@ use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
+use glob::{MatchOptions, Pattern};
 
 pub(super) struct NameEvaluator;
 impl PredicateEvaluator for NameEvaluator {
@@ -3025,8 +3296,14 @@ impl PredicateEvaluator for NameEvaluator {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        let pattern = glob::Pattern::new(value)?;
-        Ok(MatchResult::Boolean(pattern.matches(file_name)))
+        let options = MatchOptions {
+            case_sensitive: false,
+            ..Default::default()
+        };
+        let pattern = Pattern::new(value)?;
+        Ok(MatchResult::Boolean(
+            pattern.matches_with(file_name, options),
+        ))
     }
 }
 
@@ -3061,6 +3338,20 @@ mod tests {
         );
         assert!(!evaluator
             .evaluate(&mut context1, &PredicateKey::Name, "*.rs")
+            .unwrap()
+            .is_match());
+    }
+
+    #[test]
+    fn test_name_evaluator_case_insensitive() {
+        let mut context = FileContext::new(PathBuf::from("/home/user/MyFile.txt"));
+        let evaluator = NameEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Name, "myfile.txt")
+            .unwrap()
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Name, "MYFILE.TXT")
             .unwrap()
             .is_match());
     }

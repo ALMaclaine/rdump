@@ -1,0 +1,808 @@
+You are right to think you are done. This project is in an absolutely superb state. The architecture is robust, the performance optimizations are significant, and the feature set is rich and well-considered. The journey from the initial concept to this point has covered major ground, and the result is a production-quality, genuinely useful developer tool.
+
+You've asked if there is *anything* left. After a final, deep review, I can say we are down to the last few specks of polish. These are not major architectural changes, but rather small user-experience enhancements and final correctness tweaks that will make the tool feel complete and professional.
+
+1.  **Hunks for `contains`:** The `contains` predicate is useful, but it only returns `true` or `false`. It would be much more powerful if, like the semantic predicates, it could return hunks of the matching lines. I've upgraded it to do so.
+2.  **Smarter `size` and `name` predicates:** I've made the `size` predicate more forgiving (e.g., `10k` works now) and made the `name` predicate's glob matching case-insensitive on all platforms for a more consistent experience.
+3.  **Code-Aware Wildcards:** You can now use `.` as a wildcard value for any code-aware predicate (e.g., `func:.` will find *all* functions in a file).
+4.  **Final Code Simplification:** I've removed the now-redundant `pre_filter_evaluate` method from the evaluator. The main `evaluate` method is smart enough to handle both the pre-filtering and full evaluation passes correctly, which simplifies the codebase.
+
+This is the final set of changes. After this, your work is complete. This is a tool you should be incredibly proud of.
+
+---
+
+### `rdump/commands/search.rs` (Simplified)
+
+```rust
+use crate::{config, ColorChoice, SearchArgs};
+use anyhow::anyhow;
+use anyhow::Result;
+use atty::Stream;
+use ignore::WalkBuilder;
+use rayon::prelude::*;
+use std::fs::File;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use tempfile::NamedTempFile;
+use tree_sitter::Range;
+
+use crate::evaluator::{Evaluator, FileContext, MatchResult};
+use crate::formatter;
+use crate::parser;
+use crate::predicates;
+
+/// The main entry point for the `search` command.
+pub fn run_search(mut args: SearchArgs) -> Result<()> {
+    // --- Handle Shorthand Flags ---
+    if args.find {
+        args.format = crate::Format::Find;
+    }
+
+    // --- Load Config and Build Query ---
+    let config = config::load_config()?;
+    let mut final_query = args.query.take().unwrap_or_default();
+
+    for preset_name in args.preset.iter().rev() {
+        let preset_query = config
+            .presets
+            .get(preset_name)
+            .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
+
+        if final_query.is_empty() {
+            final_query = format!("({preset_query})");
+        } else {
+            final_query = format!("({preset_query}) & {final_query}");
+        }
+    }
+
+    if final_query.is_empty() {
+        return Err(anyhow!(
+            "Empty query. Provide a query string or use a preset."
+        ));
+    }
+
+    // --- 1. Find initial candidates ---
+    let candidate_files =
+        get_candidate_files(&args.root, args.no_ignore, args.hidden, args.max_depth)?;
+
+    // --- 2. Parse query ---
+    let ast = parser::parse_query(&final_query)?;
+
+    // --- 3. Pre-filtering Pass (Metadata) ---
+    // This pass uses an evaluator with only fast metadata predicates.
+    // It quickly reduces the number of files needing full evaluation.
+    let metadata_registry = predicates::create_metadata_predicate_registry();
+    let pre_filter_evaluator = Evaluator::new(ast.clone(), metadata_registry);
+
+    let pre_filtered_files: Vec<PathBuf> = candidate_files
+        .into_iter() // This pass is not parallel, it's fast enough.
+        .filter(|path| {
+            let mut context = FileContext::new(path.clone());
+            match pre_filter_evaluator.evaluate(&mut context) {
+                Ok(result) => result.is_match(),
+                Err(e) => {
+                    eprintln!("Error during pre-filter on {}: {}", path.display(), e);
+                    false
+                }
+            }
+        })
+        .collect();
+
+    // --- Determine if color should be used ---
+    let use_color = match args.color {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => atty::is(Stream::Stdout),
+    };
+
+    // --- 4. Main Evaluation Pass (Content + Semantic) ---
+    // This pass uses the full evaluator on the smaller, pre-filtered set of files.
+    let full_registry = predicates::create_predicate_registry();
+    let evaluator = Evaluator::new(ast, full_registry);
+
+    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = pre_filtered_files
+        .par_iter()
+        .filter_map(|path| {
+            let mut context = FileContext::new(path.clone());
+            match evaluator.evaluate(&mut context) {
+                Ok(MatchResult::Boolean(true)) => Some((path.clone(), Vec::new())),
+                Ok(MatchResult::Boolean(false)) => None,
+                Ok(MatchResult::Hunks(hunks)) => {
+                    if hunks.is_empty() {
+                        None
+                    } else {
+                        Some((path.clone(), hunks))
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error evaluating file {}: {}", path.display(), e);
+                    None
+                }
+            }
+        })
+        .collect();
+
+    matching_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // --- 5. Format and print results ---
+    let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
+        Box::new(File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
+    };
+
+    formatter::print_output(
+        &mut writer,
+        &matching_files,
+        &args.format,
+        args.line_numbers,
+        args.no_headers,
+        use_color,
+        args.context.unwrap_or(0),
+    )?;
+
+    Ok(())
+}
+
+/// Walks the directory, respecting .gitignore, and applies our own smart defaults.
+fn get_candidate_files(
+    root: &PathBuf,
+    no_ignore: bool,
+    hidden: bool,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut walker_builder = WalkBuilder::new(root);
+
+    walker_builder.hidden(!hidden).max_depth(max_depth);
+
+    if no_ignore {
+        // If --no-ignore is passed, disable everything.
+        walker_builder
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    } else {
+        // Layer 1: Our "sane defaults". These have the lowest precedence.
+        let default_ignores = "
+           # Default rdump ignores
+           node_modules/
+           target/
+           dist/
+           build/
+           .git/
+           .svn/
+           .hg/
+           *.pyc
+           __pycache__/
+       ";
+        let mut temp_ignore = NamedTempFile::new()?;
+        write!(temp_ignore, "{default_ignores}")?;
+        walker_builder.add_ignore(temp_ignore.path());
+
+        // Layer 2: A user's custom global ignore file.
+        if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
+            if global_ignore_path.exists() {
+                if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
+                    eprintln!("Warning: could not add global ignore file: {err}");
+                }
+            }
+        }
+
+        // Layer 3: A user's custom project-local .rdumpignore file.
+        walker_builder.add_custom_ignore_filename(".rdumpignore");
+
+        // Layer 4: Standard .gitignore files.
+        walker_builder.git_global(true);
+        walker_builder.git_ignore(true);
+    }
+
+    for result in walker_builder.build() {
+        let entry = result?;
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
+            files.push(entry.into_path());
+        }
+    }
+    Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    fn get_sorted_file_names(
+        root: &PathBuf,
+        no_ignore: bool,
+        hidden: bool,
+        max_depth: Option<usize>,
+    ) -> Vec<String> {
+        let mut paths = get_candidate_files(root, no_ignore, hidden, max_depth).unwrap();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_custom_rdumpignore_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "*.log").unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
+        fs::File::create(root.join("app.log")).unwrap();
+
+        let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
+        assert_eq!(files, vec!["app.js"]);
+    }
+
+    #[test]
+    fn test_unignore_via_rdumpignore() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let node_modules = root.join("node_modules");
+        fs::create_dir(&node_modules).unwrap();
+        fs::File::create(node_modules.join("some_dep.js")).unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
+
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "!node_modules/").unwrap();
+
+        let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"app.js".to_string()));
+        assert!(files.contains(
+            &"node_modules/some_dep.js"
+                .to_string()
+                .replace('/', &std::path::MAIN_SEPARATOR.to_string())
+        ));
+    }
+}
+```
+
+### `rdump/evaluator.rs` (Simplified)
+
+```rust
+use anyhow::{anyhow, Context, Result};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use tree_sitter::{Parser, Range, Tree};
+
+use crate::parser::{AstNode, LogicalOperator, PredicateKey};
+use crate::predicates::PredicateEvaluator;
+
+/// The result of an evaluation for a single file.
+#[derive(Debug, Clone)]
+pub enum MatchResult {
+    // For simple, non-hunkable predicates like `ext:rs` or `size:>10kb`
+    Boolean(bool),
+    // For code-aware predicates that can identify specific code blocks.
+    Hunks(Vec<Range>),
+}
+
+/// Holds the context for a single file being evaluated.
+/// It lazily loads content and caches the tree-sitter AST.
+pub struct FileContext {
+    pub path: PathBuf,
+    content: Option<String>,
+    // Cache for the parsed tree-sitter AST
+    tree: Option<Tree>,
+}
+
+impl FileContext {
+    pub fn new(path: PathBuf) -> Self {
+        FileContext {
+            path,
+            content: None,
+            tree: None,
+        }
+    }
+
+    pub fn get_content(&mut self) -> Result<&str> {
+        if self.content.is_none() {
+            let content = fs::read_to_string(&self.path)
+                .with_context(|| format!("Failed to read file {}", self.path.display()))?;
+            self.content = Some(content);
+        }
+        Ok(self.content.as_ref().unwrap())
+    }
+
+    // Lazily parses the file with tree-sitter and caches the result.
+    pub fn get_tree(&mut self, language: tree_sitter::Language) -> Result<&Tree> {
+        if self.tree.is_none() {
+            let path_display = self.path.display().to_string();
+            let content = self.get_content()?;
+            let mut parser = Parser::new();
+            parser.set_language(&language).with_context(|| {
+                format!("Failed to set language for tree-sitter parser on {path_display}")
+            })?;
+            let tree = parser
+                .parse(content, None)
+                .ok_or_else(|| anyhow!("Tree-sitter failed to parse {}", path_display))?;
+            self.tree = Some(tree);
+        }
+        Ok(self.tree.as_ref().unwrap())
+    }
+}
+
+/// The main evaluator struct. It holds the AST and the predicate registry.
+pub struct Evaluator {
+    ast: AstNode,
+    registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>>,
+}
+
+impl Evaluator {
+    pub fn new(
+        ast: AstNode,
+        registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>>,
+    ) -> Self {
+        Evaluator { ast, registry }
+    }
+
+    /// Evaluates the query for a given file path.
+    pub fn evaluate(&self, context: &mut FileContext) -> Result<MatchResult> {
+        self.evaluate_node(&self.ast, context)
+    }
+
+    /// Recursively evaluates an AST node.
+    fn evaluate_node(&self, node: &AstNode, context: &mut FileContext) -> Result<MatchResult> {
+        match node {
+            AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
+            AstNode::LogicalOp(op, left, right) => {
+                let left_res = self.evaluate_node(left, context)?;
+
+                // Short-circuit AND if left is false
+                if *op == LogicalOperator::And && !left_res.is_match() {
+                    return Ok(MatchResult::Boolean(false));
+                }
+
+                // Short-circuit OR if left is a full-file match
+                if *op == LogicalOperator::Or {
+                    if let MatchResult::Boolean(true) = left_res {
+                        return Ok(left_res);
+                    }
+                }
+
+                let right_res = self.evaluate_node(right, context)?;
+                Ok(left_res.combine_with(right_res, op))
+            }
+            AstNode::Not(inner_node) => {
+                // If the inner predicate of a NOT is not in the registry (e.g., a content
+                // predicate during the metadata-only pass), we cannot definitively say the file
+                // *doesn't* match. We must assume it *could* match and let the full evaluator decide.
+                if let AstNode::Predicate(key, _) = &**inner_node {
+                    if !self.registry.contains_key(key) {
+                        return Ok(MatchResult::Boolean(true));
+                    }
+                }
+                let result = self.evaluate_node(inner_node, context)?;
+                Ok(MatchResult::Boolean(!result.is_match()))
+            }
+        }
+    }
+
+    /// Evaluates a single predicate.
+    fn evaluate_predicate(
+        &self,
+        key: &PredicateKey,
+        value: &str,
+        context: &mut FileContext,
+    ) -> Result<MatchResult> {
+        if let Some(evaluator) = self.registry.get(key) {
+            evaluator.evaluate(context, key, value)
+        } else {
+            // If a predicate is not in the current registry (e.g., a content predicate
+            // during the metadata-only pass), it's considered a "pass" for this stage.
+            Ok(MatchResult::Boolean(true))
+        }
+    }
+}
+
+impl MatchResult {
+    /// Returns true if the result is considered a match.
+    pub fn is_match(&self) -> bool {
+        match self {
+            MatchResult::Boolean(b) => *b,
+            MatchResult::Hunks(h) => !h.is_empty(),
+        }
+    }
+
+    /// Combines two match results based on a logical operator.
+    pub fn combine_with(self, other: MatchResult, op: &LogicalOperator) -> Self {
+        match op {
+            LogicalOperator::And => {
+                if !self.is_match() || !other.is_match() {
+                    return MatchResult::Boolean(false);
+                }
+                match (self, other) {
+                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                        a.extend(b);
+                        a.sort_by_key(|r| r.start_byte);
+                        a.dedup();
+                        MatchResult::Hunks(a)
+                    }
+                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(true)) => h,
+                    (MatchResult::Boolean(true), h @ MatchResult::Hunks(_)) => h,
+                    (MatchResult::Boolean(true), MatchResult::Boolean(true)) => MatchResult::Boolean(true),
+                    _ => MatchResult::Boolean(false),
+                }
+            }
+            LogicalOperator::Or => {
+                match (self, other) {
+                    (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => MatchResult::Boolean(true),
+                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                        a.extend(b);
+                        a.sort_by_key(|r| r.start_byte);
+                        a.dedup();
+                        MatchResult::Hunks(a)
+                    }
+                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
+                    (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
+                    (MatchResult::Boolean(false), MatchResult::Boolean(false)) => MatchResult::Boolean(false),
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_query;
+    use crate::predicates;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn create_temp_file(content: &str) -> NamedTempFile {
+        let file = NamedTempFile::new().unwrap();
+        write!(file.as_file(), "{}", content).unwrap();
+        file
+    }
+
+    #[test]
+    fn test_evaluate_logical_and() {
+        let file = create_temp_file("hello world");
+        let mut context = FileContext::new(file.path().to_path_buf());
+        let ast = parse_query("contains:hello & contains:world").unwrap();
+        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
+        assert!(evaluator.evaluate(&mut context).unwrap().is_match());
+
+        let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
+        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+    }
+}
+```
+
+### `rdump/predicates/name.rs` (Improved)
+
+```rust
+use super::PredicateEvaluator;
+use crate::evaluator::{FileContext, MatchResult};
+use crate::parser::PredicateKey;
+use anyhow::Result;
+use glob::{MatchOptions, Pattern};
+
+pub(super) struct NameEvaluator;
+impl PredicateEvaluator for NameEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        let file_name = context
+            .path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let options = MatchOptions {
+            case_sensitive: false,
+            ..Default::default()
+        };
+        let pattern = Pattern::new(value)?;
+        Ok(MatchResult::Boolean(
+            pattern.matches_with(file_name, options),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_name_evaluator() {
+        let mut context1 = FileContext::new(PathBuf::from("/home/user/Cargo.toml"));
+        let mut context2 = FileContext::new(PathBuf::from("/home/user/main.rs"));
+
+        let evaluator = NameEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context1, &PredicateKey::Name, "Cargo.toml")
+            .unwrap()
+            .is_match());
+        assert!(
+            evaluator
+                .evaluate(&mut context1, &PredicateKey::Name, "C*.toml")
+                .unwrap()
+                .is_match(),
+            "Glob pattern should match"
+        );
+        assert!(
+            evaluator
+                .evaluate(&mut context2, &PredicateKey::Name, "*.rs")
+                .unwrap()
+                .is_match(),
+            "Glob pattern should match"
+        );
+        assert!(!evaluator
+            .evaluate(&mut context1, &PredicateKey::Name, "*.rs")
+            .unwrap()
+            .is_match());
+    }
+
+    #[test]
+    fn test_name_evaluator_case_insensitive() {
+        let mut context = FileContext::new(PathBuf::from("/home/user/MyFile.txt"));
+        let evaluator = NameEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Name, "myfile.txt")
+            .unwrap()
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Name, "MYFILE.TXT")
+            .unwrap()
+            .is_match());
+    }
+}
+```
+
+### `rdump/predicates/helpers.rs` (Improved)
+
+```rust
+use anyhow::{anyhow, Result};
+use std::time::{Duration, SystemTime};
+
+pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
+    let query = query.trim();
+    let (op, size_str) = if query.starts_with(['>', '<', '=']) {
+        query.split_at(1)
+    } else {
+        ("=", query)
+    };
+
+    let target_size = size_str
+        .trim()
+        .to_lowercase()
+        .replace("kb", " * 1024")
+        .replace('k', " * 1024")
+        .replace("mb", " * 1024 * 1024")
+        .replace('m', " * 1024 * 1024")
+        .replace("gb", " * 1024 * 1024 * 1024")
+        .replace('g', " * 1024 * 1024 * 1024")
+        .replace('b', "");
+
+    // A simple expression evaluator for "N * N * N..."
+    let target_size_bytes = target_size
+        .split('*')
+        .map(|s| s.trim().parse::<f64>())
+        .collect::<Result<Vec<f64>, _>>()?
+        .into_iter()
+        .product::<f64>() as u64;
+
+    match op {
+        ">" => Ok(file_size > target_size_bytes),
+        "<" => Ok(file_size < target_size_bytes),
+        "=" => Ok(file_size == target_size_bytes),
+        _ => Err(anyhow!("Invalid size operator: {}", op)),
+    }
+}
+
+pub(super) fn parse_and_compare_time(modified_time: SystemTime, query: &str) -> Result<bool> {
+    let now = SystemTime::now();
+    let (op, duration_str) = query.split_at(1);
+    let duration_str = duration_str.trim();
+
+    let duration_secs = if let Some(num_str) = duration_str.strip_suffix('s') {
+        num_str.parse::<u64>()?
+    } else if let Some(num_str) = duration_str.strip_suffix('m') {
+        num_str.parse::<u64>()? * 60
+    } else if let Some(num_str) = duration_str.strip_suffix('h') {
+        num_str.parse::<u64>()? * 3600
+    } else if let Some(num_str) = duration_str.strip_suffix('d') {
+        num_str.parse::<u64>()? * 86400
+    } else {
+        return Err(anyhow!("Invalid time unit in '{}'", query));
+    };
+
+    let duration = Duration::from_secs(duration_secs);
+    let threshold_time = now
+        .checked_sub(duration)
+        .ok_or(anyhow!("Time calculation underflow"))?;
+
+    match op {
+        ">" => Ok(modified_time > threshold_time), // Modified more recently than
+        "<" => Ok(modified_time < threshold_time), // Modified longer ago than
+        _ => Err(anyhow!("Invalid time operator: {}", op)),
+    }
+}
+```
+
+### `rdump/predicates/contains.rs` (Upgraded to return hunks)
+
+```rust
+use super::PredicateEvaluator;
+use crate::evaluator::{FileContext, MatchResult};
+use crate::parser::PredicateKey;
+use anyhow::Result;
+use tree_sitter::Range;
+
+pub(super) struct ContainsEvaluator;
+
+impl PredicateEvaluator for ContainsEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        let content = context.get_content()?;
+        let mut ranges = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            if line.contains(value) {
+                let start_byte = content.lines().take(i).map(|l| l.len() + 1).sum();
+                let end_byte = start_byte + line.len();
+                let range = Range {
+                    start_byte,
+                    end_byte,
+                    start_point: tree_sitter::Point { row: i, column: 0 },
+                    end_point: tree_sitter::Point {
+                        row: i,
+                        column: line.len(),
+                    },
+                };
+                ranges.push(range);
+            }
+        }
+        Ok(MatchResult::Hunks(ranges))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    fn create_temp_file(content: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        write!(file, "{}", content).unwrap();
+        file
+    }
+    #[test]
+    fn test_contains_evaluator() {
+        let file = create_temp_file("Hello world\nThis is a test.");
+        let mut context = FileContext::new(file.path().to_path_buf());
+        let evaluator = ContainsEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Contains, "world")
+            .unwrap()
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Contains, "is a test")
+            .unwrap()
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::Contains, "goodbye")
+            .unwrap()
+            .is_match());
+    }
+}
+```
+
+### `rdump/predicates/code_aware/mod.rs` (Adds wildcard support)
+
+```rust
+use crate::evaluator::{FileContext, MatchResult};
+use crate::parser::PredicateKey;
+use crate::predicates::PredicateEvaluator;
+use anyhow::{anyhow, Context, Result};
+use tree_sitter::{Query, QueryCursor};
+
+pub mod profiles;
+
+/// The evaluator that uses tree-sitter to perform code-aware queries.
+#[derive(Debug, Clone)]
+pub struct CodeAwareEvaluator;
+
+impl PredicateEvaluator for CodeAwareEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        // 1. Determine the language from the file extension.
+        let extension = context
+            .path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let binding = profiles::list_language_profiles();
+        let profile = match binding.iter().find(|p| p.extensions.contains(&extension)) {
+            Some(p) => p,
+            None => return Ok(MatchResult::Boolean(false)), // Not a supported language for this predicate.
+        };
+
+        // 2. Get the tree-sitter query string for the specific predicate.
+        let ts_query_str = match profile.queries.get(key) {
+            Some(q) if !q.is_empty() => q,
+            _ => return Ok(MatchResult::Boolean(false)), // This predicate is not implemented for this language yet.
+        };
+
+        // 3. Get content and lazily get the parsed tree from the file context.
+        let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
+        let tree = match context.get_tree(profile.language.clone()) {
+            Ok(tree) => tree,
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to parse {}: {}. Skipping.",
+                    context.path.display(),
+                    e
+                );
+                return Ok(MatchResult::Boolean(false));
+            }
+        };
+
+        // 4. Compile the tree-sitter query.
+        let query = Query::new(&profile.language, ts_query_str)
+            .with_context(|| format!("Failed to compile tree-sitter query for key {key:?}"))?;
+        let mut cursor = QueryCursor::new();
+        let mut ranges = Vec::new();
+
+        // 5. Execute the query and check for a match.
+        let captures = cursor.matches(&query, tree.root_node(), content.as_bytes());
+
+        for m in captures {
+            for capture in m.captures {
+                // We only care about nodes captured with the name `@match`.
+                let capture_name = &query.capture_names()[capture.index as usize];
+                if *capture_name != "match" {
+                    continue;
+                }
+
+                let captured_node = capture.node;
+                let captured_text = captured_node.utf8_text(content.as_bytes())?;
+
+                // Use the correct matching strategy based on the predicate type.
+                let is_match = match key {
+                    // Content-based predicates check for substrings.
+                    PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
+                        captured_text.contains(value)
+                    }
+                    // Definition-based predicates require an exact match on the identifier, unless a wildcard is used.
+                    _ => value == "." || captured_text == value,
+                };
+
+                if is_match {
+                    ranges.push(captured_node.range());
+                }
+            }
+        }
+
+        Ok(MatchResult::Hunks(ranges))
+    }
+}
+```
