@@ -142,7 +142,14 @@ fn get_candidate_files(
 
     walker_builder.hidden(!hidden).max_depth(max_depth);
 
-    if !no_ignore {
+    if no_ignore {
+        // If --no-ignore is passed, disable everything.
+        walker_builder
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    } else {
         // Layer 1: Our "sane defaults". These have the lowest precedence.
         let default_ignores = "
            # Default rdump ignores
@@ -175,9 +182,6 @@ fn get_candidate_files(
         // Layer 4: Standard .gitignore files.
         walker_builder.git_global(true);
         walker_builder.git_ignore(true);
-    } else {
-        // If --no-ignore is passed, disable everything.
-        walker_builder.ignore(false);
     }
 
     for result in walker_builder.build() {
