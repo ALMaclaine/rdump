@@ -2,11 +2,18 @@ use anyhow::{anyhow, Result};
 use std::time::{Duration, SystemTime};
 
 pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
-    let (op, size_str) = query.split_at(1);
+    let query = query.trim();
+    let (op, size_str) = if query.starts_with(|c: char| c == '>' || c == '<' || c == '=') {
+        query.split_at(1)
+    } else {
+        ("=", query)
+    };
+
     let target_size = size_str
         .trim()
         .to_lowercase()
         .replace("kb", " * 1024")
+        .replace("k", " * 1024")
         .replace("mb", " * 1024 * 1024")
         .replace("gb", " * 1024 * 1024 * 1024")
         .replace('b', "");

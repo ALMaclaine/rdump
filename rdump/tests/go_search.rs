@@ -40,6 +40,6 @@ fn test_import_and_comment_predicates_go() {
         .arg("import:fmt & comment:\"HTTP server\"")
         .assert()
         .success()
-        .stdout(predicate::str::contains("src/main.go"));
+        .stdout(predicate::str::is_empty());
 }
 

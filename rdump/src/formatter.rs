@@ -162,23 +162,21 @@ fn print_hunks_format(
             print_content_with_style(writer, &content, extension, with_line_numbers, use_color)?;
         } else {
             // Hunk match, print with context
-            let lines: Vec<&str> = content.lines().collect();
+            let lines: Vec<&str> = LinesWithEndings::from(&content).collect();
             let line_ranges = get_contextual_line_ranges(hunks, &lines, context_lines);
 
             for (i, range) in line_ranges.iter().enumerate() {
                 if i > 0 {
                     writeln!(writer, "...")?;
                 }
-                writeln!(writer, "```{}", extension)?;
-                for line_num in range.clone() {
-                    if let Some(line) = lines.get(line_num) {
-                        if with_line_numbers {
-                            write!(writer, "{: >5} | ", line_num + 1)?;
-                        }
-                        writeln!(writer, "{}", line)?;
-                    }
-                }
-                writeln!(writer, "```")?;
+                let hunk_content = lines[range.clone()].join("");
+                print_content_with_style(
+                    writer,
+                    &hunk_content,
+                    extension,
+                    with_line_numbers,
+                    use_color,
+                )?;
             }
         }
     }

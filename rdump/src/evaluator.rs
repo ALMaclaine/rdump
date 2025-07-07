@@ -140,7 +140,7 @@ impl Evaluator {
                         if !right_res.is_match() {
                             return Ok(MatchResult::Boolean(false));
                         }
-                        Ok(left_res.combine_with(right_res))
+                        Ok(left_res.combine_with(right_res, op))
                     }
                     crate::parser::LogicalOperator::Or => {
                         let left_res = self.evaluate_node(left, context)?;
@@ -154,7 +154,7 @@ impl Evaluator {
 
                         // Combine the results logically.
                         if left_res.is_match() && right_res.is_match() {
-                            Ok(left_res.combine_with(right_res))
+                            Ok(left_res.combine_with(right_res, op))
                         } else if left_res.is_match() {
                             Ok(left_res) // right side didn't match
                         } else {
@@ -199,18 +199,34 @@ impl MatchResult {
     }
 
     /// Combines two successful match results.
-    pub fn combine_with(self, other: MatchResult) -> Self {
+    pub fn combine_with(self, other: MatchResult, op: &crate::parser::LogicalOperator) -> Self {
         match (self, other) {
             (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                a.extend(b);
-                a.sort_by_key(|r| r.start_byte);
-                a.dedup();
+                match op {
+                    crate::parser::LogicalOperator::And => {
+                        a.retain(|hunk_a| b.iter().any(|hunk_b| Self::hunks_overlap(hunk_a, hunk_b)));
+                    }
+                    crate::parser::LogicalOperator::Or => {
+                        a.extend(b);
+                        a.sort_by_key(|r| r.start_byte);
+                        a.dedup();
+                    }
+                }
                 MatchResult::Hunks(a)
             }
             (MatchResult::Hunks(a), MatchResult::Boolean(_)) => MatchResult::Hunks(a),
             (MatchResult::Boolean(_), MatchResult::Hunks(b)) => MatchResult::Hunks(b),
-            (MatchResult::Boolean(a), MatchResult::Boolean(b)) => MatchResult::Boolean(a && b),
+            (MatchResult::Boolean(a), MatchResult::Boolean(b)) => {
+                match op {
+                    crate::parser::LogicalOperator::And => MatchResult::Boolean(a && b),
+                    crate::parser::LogicalOperator::Or => MatchResult::Boolean(a || b),
+                }
+            }
         }
+    }
+
+    fn hunks_overlap(a: &Range, b: &Range) -> bool {
+        a.start_byte < b.end_byte && b.start_byte < a.end_byte
     }
 }
 
@@ -291,10 +307,10 @@ mod tests {
         let hunks2 = vec![tree_sitter::Range { start_byte: 15, end_byte: 25, start_point: Default::default(), end_point: Default::default() }];
         let result1 = MatchResult::Hunks(hunks1);
         let result2 = MatchResult::Hunks(hunks2);
-        let combined = result1.combine_with(result2);
+        let combined = result1.combine_with(result2, &crate::parser::LogicalOperator::And);
         assert!(combined.is_match());
         if let MatchResult::Hunks(hunks) = combined {
-            assert_eq!(hunks.len(), 2);
+            assert_eq!(hunks.len(), 1);
         } else {
             panic!("Expected Hunks result");
         }

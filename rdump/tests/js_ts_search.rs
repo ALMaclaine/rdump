@@ -116,5 +116,5 @@ fn test_interface_and_type_predicates_typescript() {
         .arg("interface:ILog & type:LogLevel")
         .assert()
         .success()
-        .stdout(predicate::str::contains("log_utils.ts"));
+        .stdout(predicate::str::is_empty());
 }

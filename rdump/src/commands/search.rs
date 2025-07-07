@@ -139,6 +139,7 @@ fn get_candidate_files(
 ) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut walker_builder = WalkBuilder::new(root);
+    walker_builder.git_ignore(true).ignore(false);
 
     walker_builder.hidden(!hidden).max_depth(max_depth);
 
