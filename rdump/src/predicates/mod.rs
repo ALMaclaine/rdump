@@ -24,12 +24,18 @@ use std::collections::HashMap;
 // The core trait that all predicate evaluators must implement.
 pub trait PredicateEvaluator {
     // The key is now passed to allow one evaluator to handle multiple predicate types.
-    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<MatchResult>;
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult>;
 }
 
 /// Creates a predicate registry with only the fast, metadata-based predicates.
 /// This is used for the pre-filtering pass.
-pub fn create_metadata_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+pub fn create_metadata_predicate_registry(
+) -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
     let mut registry: HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> =
         HashMap::new();
 
@@ -43,7 +49,8 @@ pub fn create_metadata_predicate_registry() -> HashMap<PredicateKey, Box<dyn Pre
 }
 
 /// Creates and populates the complete predicate registry.
-pub fn create_predicate_registry() -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
+pub fn create_predicate_registry(
+) -> HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>> {
     // Start with the metadata predicates
     let mut registry = create_metadata_predicate_registry();
 

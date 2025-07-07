@@ -39,10 +39,10 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
         .to_string(),
     );
 
-   // Query for function and method call sites.
-   queries.insert(
-       PredicateKey::Call,
-       "
+    // Query for function and method call sites.
+    queries.insert(
+        PredicateKey::Call,
+        "
        (call_expression
            function: [
                (identifier) @match
@@ -51,11 +51,17 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
        )
        (macro_invocation macro: (identifier) @match)
        "
-       .to_string(),
-   );
+        .to_string(),
+    );
 
-    queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
-    queries.insert(PredicateKey::Str, "[(string_literal) @match (raw_string_literal) @match]".to_string());
+    queries.insert(
+        PredicateKey::Comment,
+        "[(line_comment) @match (block_comment) @match]".to_string(),
+    );
+    queries.insert(
+        PredicateKey::Str,
+        "[(string_literal) @match (raw_string_literal) @match]".to_string(),
+    );
 
     LanguageProfile {
         name: "Rust",

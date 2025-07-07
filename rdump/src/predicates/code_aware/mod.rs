@@ -11,7 +11,12 @@ pub mod profiles;
 pub struct CodeAwareEvaluator;
 
 impl PredicateEvaluator for CodeAwareEvaluator {
-    fn evaluate(&self, context: &mut FileContext, key: &PredicateKey, value: &str) -> Result<MatchResult> {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
         // 1. Determine the language from the file extension.
         let extension = context
             .path
@@ -36,14 +41,18 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         let tree = match context.get_tree(profile.language.clone()) {
             Ok(tree) => tree,
             Err(e) => {
-                eprintln!("Warning: Failed to parse {}: {}. Skipping.", context.path.display(), e);
+                eprintln!(
+                    "Warning: Failed to parse {}: {}. Skipping.",
+                    context.path.display(),
+                    e
+                );
                 return Ok(MatchResult::Boolean(false));
             }
         };
 
         // 4. Compile the tree-sitter query.
         let query = Query::new(&profile.language, ts_query_str)
-            .with_context(|| format!("Failed to compile tree-sitter query for key {:?}", key))?;
+            .with_context(|| format!("Failed to compile tree-sitter query for key {key:?}"))?;
         let mut cursor = QueryCursor::new();
         let mut ranges = Vec::new();
 
@@ -53,21 +62,24 @@ impl PredicateEvaluator for CodeAwareEvaluator {
         for m in captures {
             for capture in m.captures {
                 // We only care about nodes captured with the name `@match`.
-                let capture_name = &query.capture_names()[capture.index as usize];
+                let _capture_name = &query.capture_names()[capture.index as usize];
                 let node_text = content
-                                .get(capture.node.byte_range())
-                                .ok_or_else(|| anyhow!("Failed to get text for node"))?;
-                            
-                            let matched = match key {
-                                // For these, we check for substrings.
-                                PredicateKey::Comment | PredicateKey::Str | PredicateKey::Import => node_text.contains(value),
-                                // For everything else (defs, funcs, calls), we want an exact match on the identifier.
-                                _ => node_text == value,
-                            };
+                    .get(capture.node.byte_range())
+                    .ok_or_else(|| anyhow!("Failed to get text for node"))?;
 
-                            if matched {
-                                ranges.push(capture.node.range());
-                            }
+                let matched = match (key, value) {
+                    // For comments and strings, we check for substrings.
+                    (PredicateKey::Comment | PredicateKey::Str | PredicateKey::Import, _) => {
+                        node_text.contains(value)
+                    }
+                    // For everything else (defs, funcs, calls), we want an exact match on the identifier, unless the value is a wildcard.
+                    (_, ".") => true,
+                    _ => node_text == value,
+                };
+
+                if matched {
+                    ranges.push(capture.node.range());
+                }
             }
         }
 

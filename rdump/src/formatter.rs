@@ -31,23 +31,26 @@ fn print_markdown_format(
     writer: &mut impl Write,
     matching_files: &[(PathBuf, Vec<Range>)],
     with_line_numbers: bool,
+    with_headers: bool,
     use_color: bool,
 ) -> Result<()> {
     for (i, (path, _)) in matching_files.iter().enumerate() {
-        if i > 0 {
-            writeln!(writer, "\n---\n")?;
+        if with_headers {
+            if i > 0 {
+                writeln!(writer, "\n---\n")?;
+            }
+            writeln!(writer, "File: {}", path.display())?;
+            writeln!(writer, "---")?;
         }
-        writeln!(writer, "File: {}", path.display())?;
-        writeln!(writer, "---")?;
         let content = fs::read_to_string(path)?;
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
         if use_color {
             // To terminal: use ANSI codes for color
-            print_highlighted_content(writer, &content, extension, with_line_numbers)?;
+            print_highlighted_content(writer, &content, extension, with_line_numbers, 0)?;
         } else {
             // To file/pipe: use Markdown fences for color
-            print_markdown_fenced_content(writer, &content, extension, with_line_numbers)?;
+            print_markdown_fenced_content(writer, &content, extension, with_line_numbers, 0)?;
         }
     }
     Ok(())
@@ -66,11 +69,12 @@ fn print_cat_format(
             print_highlighted_content(
                 writer,
                 &content,
-                &path.extension().and_then(|s| s.to_str()).unwrap_or(""),
+                path.extension().and_then(|s| s.to_str()).unwrap_or(""),
                 with_line_numbers,
+                0,
             )?;
         } else {
-            print_plain_content(writer, &content, with_line_numbers)?; // To file/pipe
+            print_plain_content(writer, &content, with_line_numbers, 0)?; // To file/pipe
         }
     }
     Ok(())
@@ -82,9 +86,8 @@ fn print_json_format(
 ) -> Result<()> {
     let mut outputs = Vec::new();
     for (path, _) in matching_files {
-        let content = fs::read_to_string(path).with_context(|| {
-            format!("Failed to read file for final output: {}", path.display())
-        })?;
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read file for final output: {}", path.display()))?;
         outputs.push(FileOutput {
             path: path.to_string_lossy().to_string(),
             content,
@@ -145,21 +148,24 @@ fn print_hunks_format(
     writer: &mut impl Write,
     matching_files: &[(PathBuf, Vec<Range>)],
     with_line_numbers: bool,
+    with_headers: bool,
     use_color: bool,
     context_lines: usize,
 ) -> Result<()> {
     for (i, (path, hunks)) in matching_files.iter().enumerate() {
-        if i > 0 {
-            writeln!(writer, "\n---\n")?;
+        if with_headers {
+            if i > 0 {
+                writeln!(writer, "\n---\n")?;
+            }
+            writeln!(writer, "File: {}", path.display())?;
+            writeln!(writer, "---")?;
         }
-        writeln!(writer, "File: {}", path.display())?;
-        writeln!(writer, "---")?;
         let content = fs::read_to_string(path)?;
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
         if hunks.is_empty() {
             // Boolean match, print the whole file
-            print_content_with_style(writer, &content, extension, with_line_numbers, use_color)?;
+            print_content_with_style(writer, &content, extension, with_line_numbers, use_color, 0)?;
         } else {
             // Hunk match, print with context
             let lines: Vec<&str> = LinesWithEndings::from(&content).collect();
@@ -176,6 +182,7 @@ fn print_hunks_format(
                     extension,
                     with_line_numbers,
                     use_color,
+                    range.start,
                 )?;
             }
         }
@@ -189,6 +196,7 @@ pub fn print_output(
     matching_files: &[(PathBuf, Vec<Range>)],
     format: &Format,
     with_line_numbers: bool,
+    no_headers: bool,
     use_color: bool,
     context_lines: usize,
 ) -> Result<()> {
@@ -197,21 +205,24 @@ pub fn print_output(
         Format::Paths => print_paths_format(writer, matching_files)?,
         Format::Json => print_json_format(writer, matching_files)?,
         Format::Cat => print_cat_format(writer, matching_files, with_line_numbers, use_color)?,
-        Format::Markdown => {
-            print_markdown_format(writer, matching_files, with_line_numbers, use_color)?
-        }
+        Format::Markdown => print_markdown_format(
+            writer,
+            matching_files,
+            with_line_numbers,
+            !no_headers,
+            use_color,
+        )?,
         Format::Hunks => print_hunks_format(
             writer,
             matching_files,
             with_line_numbers,
+            !no_headers,
             use_color,
             context_lines,
         )?,
     }
     Ok(())
 }
-
-
 
 /// Helper to choose the correct printing function based on color/style preference.
 fn print_content_with_style(
@@ -220,11 +231,24 @@ fn print_content_with_style(
     extension: &str,
     with_line_numbers: bool,
     use_color: bool,
+    start_line_number: usize,
 ) -> Result<()> {
     if use_color {
-        print_highlighted_content(writer, content, extension, with_line_numbers)
+        print_highlighted_content(
+            writer,
+            content,
+            extension,
+            with_line_numbers,
+            start_line_number,
+        )
     } else {
-        print_markdown_fenced_content(writer, content, extension, with_line_numbers)
+        print_markdown_fenced_content(
+            writer,
+            content,
+            extension,
+            with_line_numbers,
+            start_line_number,
+        )
     }
 }
 
@@ -270,13 +294,13 @@ fn get_contextual_line_ranges(
     merged_ranges
 }
 
-
 /// Prints syntax-highlighted content to the writer.
 fn print_highlighted_content(
     writer: &mut impl Write,
     content: &str,
     extension: &str,
     with_line_numbers: bool,
+    start_line_number: usize,
 ) -> Result<()> {
     let syntax = SYNTAX_SET
         .find_syntax_by_extension(extension)
@@ -287,11 +311,11 @@ fn print_highlighted_content(
 
     for (i, line) in LinesWithEndings::from(content).enumerate() {
         if with_line_numbers {
-            write!(writer, "{: >5} | ", i + 1)?;
+            write!(writer, "{: >5} | ", start_line_number + i + 1)?;
         }
         let ranges: Vec<(Style, &str)> = highlighter.highlight_line(line, &SYNTAX_SET)?;
         let escaped = as_24_bit_terminal_escaped(&ranges[..], false);
-        write!(writer, "{}", escaped)?;
+        write!(writer, "{escaped}")?;
     }
     // Reset color at the end
     write!(writer, "\x1b[0m")?;
@@ -303,12 +327,13 @@ fn print_plain_content(
     writer: &mut impl Write,
     content: &str,
     with_line_numbers: bool,
+    start_line_number: usize,
 ) -> Result<()> {
     for (i, line) in content.lines().enumerate() {
         if with_line_numbers {
-            writeln!(writer, "{: >5} | {}", i + 1, line)?;
+            writeln!(writer, "{: >5} | {}", start_line_number + i + 1, line)?;
         } else {
-            writeln!(writer, "{}", line)?;
+            writeln!(writer, "{line}")?;
         }
     }
     Ok(())
@@ -320,10 +345,11 @@ fn print_markdown_fenced_content(
     content: &str,
     extension: &str,
     with_line_numbers: bool,
+    start_line_number: usize,
 ) -> Result<()> {
-    writeln!(writer, "```{}", extension)?;
+    writeln!(writer, "```{extension}")?;
     // print_plain_content handles line numbers correctly
-    print_plain_content(writer, content, with_line_numbers)?;
+    print_plain_content(writer, content, with_line_numbers, start_line_number)?;
     writeln!(writer, "```")?;
     Ok(())
 }
@@ -340,10 +366,7 @@ fn format_mode(mode: u32) -> String {
         let other_r = if mode & 0o004 != 0 { 'r' } else { '-' };
         let other_w = if mode & 0o002 != 0 { 'w' } else { '-' };
         let other_x = if mode & 0o001 != 0 { 'x' } else { '-' };
-        format!(
-            "-{}{}{}{}{}{}{}{}{}",
-            user_r, user_w, user_x, group_r, group_w, group_x, other_r, other_w, other_x
-        )
+        format!("-{user_r}{user_w}{user_x}{group_r}{group_w}{group_x}{other_r}{other_w}{other_x}")
     }
     #[cfg(not(unix))]
     {
@@ -369,7 +392,7 @@ fn format_size(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.1}K", bytes as f64 / KB as f64)
     } else {
-        format!("{}B", bytes)
+        format!("{bytes}B")
     }
 }
 
@@ -391,7 +414,7 @@ mod tests {
         let file = create_temp_file_with_content("a\nb");
         let paths = vec![(file.path().to_path_buf(), vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, true, false, 0).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, true, false, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         assert_eq!(output, "    1 | a\n    2 | b\n");
     }
@@ -405,7 +428,7 @@ mod tests {
             (file2.path().to_path_buf(), vec![]),
         ];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Paths, false, false, 0).unwrap();
+        print_output(&mut writer, &paths, &Format::Paths, false, false, false, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
         let expected = format!("{}\n{}\n", file1.path().display(), file2.path().display());
         assert_eq!(output, expected);
@@ -418,7 +441,16 @@ mod tests {
         let mut writer = Vec::new();
 
         // Test with use_color = false to get markdown fences
-        print_output(&mut writer, &paths, &Format::Markdown, false, false, 0).unwrap();
+        print_output(
+            &mut writer,
+            &paths,
+            &Format::Markdown,
+            false,
+            false,
+            false,
+            0,
+        )
+        .unwrap();
 
         let output = String::from_utf8(writer).unwrap();
 
@@ -437,14 +469,14 @@ mod tests {
 
         let paths = vec![(rs_path, vec![])];
         let mut writer = Vec::new();
-        print_output(&mut writer, &paths, &Format::Cat, false, true, 0).unwrap();
+        print_output(&mut writer, &paths, &Format::Cat, false, false, true, 0).unwrap();
         let output = String::from_utf8(writer).unwrap();
 
         // Check for evidence of ANSI color, not the exact codes which can be brittle.
+        assert!(output.contains("\x1b["), "Should contain ANSI escape codes");
         assert!(
-            output.contains("\x1b["),
-            "Should contain ANSI escape codes"
+            !output.contains("```"),
+            "Should not contain markdown fences"
         );
-        assert!(!output.contains("```"), "Should not contain markdown fences");
     }
 }

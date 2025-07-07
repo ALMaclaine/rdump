@@ -12,7 +12,10 @@ pub(super) fn create_java_profile() -> LanguageProfile {
     let interface_query = "(interface_declaration name: (identifier) @match)";
     let enum_query = "(enum_declaration name: (identifier) @match)";
 
-    queries.insert(PredicateKey::Def, format!("[ {} {} {} ]", class_query, interface_query, enum_query));
+    queries.insert(
+        PredicateKey::Def,
+        format!("[ {class_query} {interface_query} {enum_query} ]"),
+    );
     queries.insert(PredicateKey::Class, class_query.to_string());
     queries.insert(PredicateKey::Interface, interface_query.to_string());
     queries.insert(PredicateKey::Enum, enum_query.to_string());
@@ -22,8 +25,14 @@ pub(super) fn create_java_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Call, "[ (method_invocation name: (identifier) @match) (object_creation_expression type: (type_identifier) @match) ]".to_string());
 
     // --- Other ---
-    queries.insert(PredicateKey::Import, "(import_declaration) @match".to_string());
-    queries.insert(PredicateKey::Comment, "[(line_comment) @match (block_comment) @match]".to_string());
+    queries.insert(
+        PredicateKey::Import,
+        "(import_declaration) @match".to_string(),
+    );
+    queries.insert(
+        PredicateKey::Comment,
+        "[(line_comment) @match (block_comment) @match]".to_string(),
+    );
     queries.insert(PredicateKey::Str, "(string_literal) @match".to_string());
 
     LanguageProfile {

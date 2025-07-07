@@ -44,7 +44,7 @@ pub fn load_config() -> Result<Config> {
     if let Some(global_config_path) = global_config_path() {
         if global_config_path.exists() {
             let global_config_str = fs::read_to_string(&global_config_path).with_context(|| {
-                format!("Failed to read global config at {:?}", global_config_path)
+                format!("Failed to read global config at {global_config_path:?}")
             })?;
             let global_config: Config = toml::from_str(&global_config_str)?;
             final_config.presets.extend(global_config.presets);
@@ -55,9 +55,8 @@ pub fn load_config() -> Result<Config> {
     let current_dir = env::current_dir()?;
     if let Some(local_config_path) = find_local_config(&current_dir) {
         if local_config_path.exists() {
-            let local_config_str = fs::read_to_string(&local_config_path).with_context(|| {
-                format!("Failed to read local config at {:?}", local_config_path)
-            })?;
+            let local_config_str = fs::read_to_string(&local_config_path)
+                .with_context(|| format!("Failed to read local config at {local_config_path:?}"))?;
             let local_config: Config = toml::from_str(&local_config_str)?;
             final_config.presets.extend(local_config.presets);
         }
@@ -73,14 +72,14 @@ pub fn save_config(config: &Config) -> Result<()> {
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create config directory at {:?}", parent))?;
+            .with_context(|| format!("Failed to create config directory at {parent:?}"))?;
     }
 
     let toml_string = toml::to_string_pretty(config)?;
     fs::write(&path, toml_string)
-        .with_context(|| format!("Failed to write global config to {:?}", path))?;
+        .with_context(|| format!("Failed to write global config to {path:?}"))?;
 
-    println!("Successfully saved config to {:?}", path);
+    println!("Successfully saved config to {path:?}");
     Ok(())
 }
 
@@ -159,10 +158,7 @@ mod tests {
         assert_eq!(config.presets.len(), 3);
         assert_eq!(config.presets.get("rust").unwrap(), "ext:rs");
         assert_eq!(config.presets.get("scripts").unwrap(), "ext:sh");
-        assert_eq!(
-            config.presets.get("docs").unwrap(),
-            "ext:md | ext:txt"
-        );
+        assert_eq!(config.presets.get("docs").unwrap(), "ext:md | ext:txt");
 
         env::remove_var("RDUMP_TEST_CONFIG_DIR");
     }

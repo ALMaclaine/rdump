@@ -6,14 +6,10 @@ pub fn run_lang(action: LangAction) -> Result<()> {
     match action {
         LangAction::List => {
             let profiles = list_language_profiles();
-            println!("{:<12} {}", "NAME", "EXTENSIONS");
+            println!("{:<12} EXTENSIONS", "NAME");
             println!("──────────────────────────");
             for profile in profiles {
-                println!(
-                    "{:<12} {}",
-                    profile.name,
-                    profile.extensions.join(", ")
-                );
+                println!("{:<12} {}", profile.name, profile.extensions.join(", "));
             }
         }
         LangAction::Describe { language } => {
@@ -24,10 +20,14 @@ pub fn run_lang(action: LangAction) -> Result<()> {
                 .find(|p| p.name.to_lowercase() == lang_lower || p.extensions.contains(&lang_lower.as_str()))
                 .ok_or_else(|| anyhow!("Language '{}' not supported. Run `rdump lang list` to see available languages.", language))?;
 
-            println!("Predicates for {} ({})", profile.name, profile.extensions.join(", "));
+            println!(
+                "Predicates for {} ({})",
+                profile.name,
+                profile.extensions.join(", ")
+            );
 
-            let metadata_preds = vec!["ext", "name", "path", "size", "modified"];
-            let content_preds = vec!["contains", "matches"];
+            let metadata_preds = ["ext", "name", "path", "size", "modified"];
+            let content_preds = ["contains", "matches"];
 
             println!("\nMETADATA");
             println!("  {}", metadata_preds.join(", "));

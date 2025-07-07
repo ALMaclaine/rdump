@@ -31,37 +31,37 @@ pub enum PredicateKey {
     // Syntactic Content
     Comment,
     Str,
-   // Usage
-   Call,
+    // Usage
+    Call,
     // A key for testing or unknown predicates
     Other(String),
 }
 
 impl AsRef<str> for PredicateKey {
-   fn as_ref(&self) -> &str {
-       match self {
-           PredicateKey::Ext => "ext",
-           PredicateKey::Name => "name",
-           PredicateKey::Path => "path",
-           PredicateKey::Contains => "contains",
-           PredicateKey::Matches => "matches",
-           PredicateKey::Size => "size",
-           PredicateKey::Modified => "modified",
-           PredicateKey::Def => "def",
-           PredicateKey::Func => "func",
-           PredicateKey::Import => "import",
-           PredicateKey::Class => "class",
-           PredicateKey::Struct => "struct",
-           PredicateKey::Enum => "enum",
-           PredicateKey::Interface => "interface",
-           PredicateKey::Trait => "trait",
-           PredicateKey::Type => "type",
-           PredicateKey::Comment => "comment",
-           PredicateKey::Str => "str",
-           PredicateKey::Call => "call",
-           PredicateKey::Other(s) => s.as_str(),
-       }
-   }
+    fn as_ref(&self) -> &str {
+        match self {
+            PredicateKey::Ext => "ext",
+            PredicateKey::Name => "name",
+            PredicateKey::Path => "path",
+            PredicateKey::Contains => "contains",
+            PredicateKey::Matches => "matches",
+            PredicateKey::Size => "size",
+            PredicateKey::Modified => "modified",
+            PredicateKey::Def => "def",
+            PredicateKey::Func => "func",
+            PredicateKey::Import => "import",
+            PredicateKey::Class => "class",
+            PredicateKey::Struct => "struct",
+            PredicateKey::Enum => "enum",
+            PredicateKey::Interface => "interface",
+            PredicateKey::Trait => "trait",
+            PredicateKey::Type => "type",
+            PredicateKey::Comment => "comment",
+            PredicateKey::Str => "str",
+            PredicateKey::Call => "call",
+            PredicateKey::Other(s) => s.as_str(),
+        }
+    }
 }
 
 impl From<&str> for PredicateKey {
@@ -86,7 +86,7 @@ impl From<&str> for PredicateKey {
             "type" => Self::Type,
             "comment" => Self::Comment,
             "str" => Self::Str,
-           "call" => Self::Call,
+            "call" => Self::Call,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
@@ -107,18 +107,18 @@ pub enum LogicalOperator {
 }
 
 pub fn parse_query(query: &str) -> Result<AstNode> {
-   // Check for empty or whitespace-only queries BEFORE parsing.
-   if query.trim().is_empty() {
-       return Err(anyhow!("Query cannot be empty."));
-   }
+    // Check for empty or whitespace-only queries BEFORE parsing.
+    if query.trim().is_empty() {
+        return Err(anyhow!("Query cannot be empty."));
+    }
 
-   match RqlParser::parse(Rule::query, query) {
-       Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
-       Err(e) => {
-           // Re-format the pest error to be more user-friendly.
-           Err(anyhow!("Invalid query syntax:\n{}", e))
-       }
-   }
+    match RqlParser::parse(Rule::query, query) {
+        Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
+        Err(e) => {
+            // Re-format the pest error to be more user-friendly.
+            Err(anyhow!("Invalid query syntax:\n{}", e))
+        }
+    }
 }
 
 fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
@@ -286,46 +286,61 @@ mod tests {
         assert_eq!(ast_import, *predicate(PredicateKey::Import, "serde"));
     }
 
-   #[test]
-   fn test_parse_granular_and_syntactic_predicates() {
-       assert_eq!(parse_query("class:Foo").unwrap(), *predicate(PredicateKey::Class, "Foo"));
-       assert_eq!(parse_query("struct:Bar").unwrap(), *predicate(PredicateKey::Struct, "Bar"));
-       assert_eq!(parse_query("comment:TODO").unwrap(), *predicate(PredicateKey::Comment, "TODO"));
-       assert_eq!(parse_query("str:'api_key'").unwrap(), *predicate(PredicateKey::Str, "api_key"));
-       assert_eq!(parse_query("call:my_func").unwrap(), *predicate(PredicateKey::Call, "my_func"));
-   }
+    #[test]
+    fn test_parse_granular_and_syntactic_predicates() {
+        assert_eq!(
+            parse_query("class:Foo").unwrap(),
+            *predicate(PredicateKey::Class, "Foo")
+        );
+        assert_eq!(
+            parse_query("struct:Bar").unwrap(),
+            *predicate(PredicateKey::Struct, "Bar")
+        );
+        assert_eq!(
+            parse_query("comment:TODO").unwrap(),
+            *predicate(PredicateKey::Comment, "TODO")
+        );
+        assert_eq!(
+            parse_query("str:'api_key'").unwrap(),
+            *predicate(PredicateKey::Str, "api_key")
+        );
+        assert_eq!(
+            parse_query("call:my_func").unwrap(),
+            *predicate(PredicateKey::Call, "my_func")
+        );
+    }
 
-   #[test]
-   fn test_error_on_trailing_operator() {
-       let result = parse_query("ext:rs &");
-       let err = result.unwrap_err();
-       assert!(err.to_string().contains("Invalid query syntax:"));
-       assert!(err.to_string().contains("expected")); // Pest's pointer is still useful
-   }
+    #[test]
+    fn test_error_on_trailing_operator() {
+        let result = parse_query("ext:rs &");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid query syntax:"));
+        assert!(err.to_string().contains("expected")); // Pest's pointer is still useful
+    }
 
-   #[test]
-   fn test_error_on_missing_value() {
-       let result = parse_query("ext:");
-       let err = result.unwrap_err();
-       assert!(err.to_string().contains("Invalid query syntax:"));
-   }
+    #[test]
+    fn test_error_on_missing_value() {
+        let result = parse_query("ext:");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid query syntax:"));
+    }
 
-   #[test]
-   fn test_error_on_unclosed_parenthesis() {
-       let result = parse_query("(ext:rs | path:src");
-       let err = result.unwrap_err();
-       assert!(err.to_string().contains("Invalid query syntax:"));
-   }
+    #[test]
+    fn test_error_on_unclosed_parenthesis() {
+        let result = parse_query("(ext:rs | path:src");
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Invalid query syntax:"));
+    }
 
-   #[test]
-   fn test_error_on_empty_query() {
-       let result = parse_query("");
-       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
-   }
+    #[test]
+    fn test_error_on_empty_query() {
+        let result = parse_query("");
+        assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
+    }
 
-   #[test]
-   fn test_error_on_whitespace_query() {
-       let result = parse_query("   ");
-       assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
-   }
+    #[test]
+    fn test_error_on_whitespace_query() {
+        let result = parse_query("   ");
+        assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
+    }
 }

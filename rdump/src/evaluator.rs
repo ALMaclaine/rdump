@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use tree_sitter::{Parser as TreeSitterParser, Range, Tree};
+use tree_sitter::{Parser, Range, Tree};
 
 use crate::parser::{AstNode, PredicateKey};
 use crate::predicates::PredicateEvaluator;
@@ -48,12 +48,9 @@ impl FileContext {
         if self.tree.is_none() {
             let path_display = self.path.display().to_string();
             let content = self.get_content()?;
-            let mut parser = TreeSitterParser::new();
+            let mut parser = Parser::new();
             parser.set_language(&language).with_context(|| {
-                format!(
-                    "Failed to set language for tree-sitter parser on {}",
-                    path_display
-                )
+                format!("Failed to set language for tree-sitter parser on {path_display}")
             })?;
             let tree = parser
                 .parse(content, None)
@@ -100,16 +97,14 @@ impl Evaluator {
                     Ok(true)
                 }
             }
-            AstNode::LogicalOp(op, left, right) => {
-                match op {
-                    crate::parser::LogicalOperator::And => {
-                        Ok(self.pre_filter_evaluate_node(left, context)? && self.pre_filter_evaluate_node(right, context)?)
-                    }
-                    crate::parser::LogicalOperator::Or => {
-                        Ok(self.pre_filter_evaluate_node(left, context)? || self.pre_filter_evaluate_node(right, context)?)
-                    }
-                }
-            }
+            AstNode::LogicalOp(op, left, right) => match op {
+                crate::parser::LogicalOperator::And => Ok(self
+                    .pre_filter_evaluate_node(left, context)?
+                    && self.pre_filter_evaluate_node(right, context)?),
+                crate::parser::LogicalOperator::Or => Ok(self
+                    .pre_filter_evaluate_node(left, context)?
+                    || self.pre_filter_evaluate_node(right, context)?),
+            },
             AstNode::Not(inner_node) => {
                 // For the pre-filtering pass, if the inner predicate of a NOT is not in the
                 // registry, we cannot definitively say the file *doesn't* match.
@@ -131,17 +126,13 @@ impl Evaluator {
             AstNode::Predicate(key, value) => self.evaluate_predicate(key, value, context),
             AstNode::LogicalOp(op, left, right) => {
                 let left_res = self.evaluate_node(left, context)?;
-                // For AND, if the left side is a non-match, we can short-circuit.
-                if matches!(op, crate::parser::LogicalOperator::And) && !left_res.is_match() {
-                    return Ok(MatchResult::Boolean(false));
-                }
                 // For OR, if the left side is a full-file match (Boolean(true)), we can short-circuit.
                 if matches!(op, crate::parser::LogicalOperator::Or) {
                     if let MatchResult::Boolean(true) = left_res {
                         return Ok(left_res);
                     }
                 }
-
+                // For AND, we must evaluate both sides to combine hunks.
                 let right_res = self.evaluate_node(right, context)?;
                 Ok(left_res.combine_with(right_res, op))
             }
@@ -188,16 +179,24 @@ impl MatchResult {
                     return MatchResult::Boolean(false);
                 }
                 match (self, other) {
-                    // Both are Hunks: Intersect them.
+                    // Both are Hunks: The AND is only true if both have matches.
+                    // If so, the result is the *union* of the hunks, not the intersection.
                     (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                        a.retain(|hunk_a| b.iter().any(|hunk_b| Self::hunks_overlap(hunk_a, hunk_b)));
+                        if a.is_empty() || b.is_empty() {
+                            return MatchResult::Boolean(false);
+                        }
+                        a.extend(b);
+                        a.sort_by_key(|r| r.start_byte);
+                        a.dedup();
                         MatchResult::Hunks(a)
                     }
                     // One is Hunks, the other is a full-file match: The result is the Hunks.
                     (h @ MatchResult::Hunks(_), MatchResult::Boolean(true)) => h,
                     (MatchResult::Boolean(true), h @ MatchResult::Hunks(_)) => h,
                     // Both are full-file matches.
-                    (MatchResult::Boolean(true), MatchResult::Boolean(true)) => MatchResult::Boolean(true),
+                    (MatchResult::Boolean(true), MatchResult::Boolean(true)) => {
+                        MatchResult::Boolean(true)
+                    }
                     // Any other combination is a non-match.
                     _ => MatchResult::Boolean(false),
                 }
@@ -206,8 +205,12 @@ impl MatchResult {
                 if !self.is_match() && !other.is_match() {
                     return MatchResult::Boolean(false);
                 }
-                if !self.is_match() { return other; }
-                if !other.is_match() { return self; }
+                if !self.is_match() {
+                    return other;
+                }
+                if !other.is_match() {
+                    return self;
+                }
 
                 match (self, other) {
                     // Both are Hunks: Union them.
@@ -218,7 +221,9 @@ impl MatchResult {
                         MatchResult::Hunks(a)
                     }
                     // If either is a full-file match, the result is a full-file match.
-                    (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => MatchResult::Boolean(true),
+                    (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => {
+                        MatchResult::Boolean(true)
+                    }
                     // One is Hunks, the other is a non-matching Boolean: The result is the Hunks.
                     (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
                     (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
@@ -229,9 +234,9 @@ impl MatchResult {
         }
     }
 
-    fn hunks_overlap(a: &Range, b: &Range) -> bool {
-        a.start_byte < b.end_byte && b.start_byte < a.end_byte
-    }
+    // fn hunks_overlap(a: &Range, b: &Range) -> bool {
+    //     a.start_byte < b.end_byte && b.start_byte < a.end_byte
+    // }
 }
 
 #[cfg(test)]
@@ -267,10 +272,7 @@ mod tests {
 
         let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail
-            .evaluate(&mut context)
-            .unwrap()
-            .is_match());
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
     }
 
     #[test]
@@ -283,10 +285,7 @@ mod tests {
 
         let ast_fail = parse_query("contains:goodbye | contains:farewell").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail
-            .evaluate(&mut context)
-            .unwrap()
-            .is_match());
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
     }
 
     #[test]
@@ -299,22 +298,29 @@ mod tests {
 
         let ast_fail = parse_query("!contains:hello").unwrap();
         let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
-        assert!(!evaluator_fail
-            .evaluate(&mut context)
-            .unwrap()
-            .is_match());
+        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
     }
 
     #[test]
     fn test_combine_with_hunks_intersection() {
-        let hunks1 = vec![tree_sitter::Range { start_byte: 10, end_byte: 20, start_point: Default::default(), end_point: Default::default() }];
-        let hunks2 = vec![tree_sitter::Range { start_byte: 15, end_byte: 25, start_point: Default::default(), end_point: Default::default() }];
+        let hunks1 = vec![tree_sitter::Range {
+            start_byte: 10,
+            end_byte: 20,
+            start_point: Default::default(),
+            end_point: Default::default(),
+        }];
+        let hunks2 = vec![tree_sitter::Range {
+            start_byte: 15,
+            end_byte: 25,
+            start_point: Default::default(),
+            end_point: Default::default(),
+        }];
         let result1 = MatchResult::Hunks(hunks1);
         let result2 = MatchResult::Hunks(hunks2);
         let combined = result1.combine_with(result2, &crate::parser::LogicalOperator::And);
         assert!(combined.is_match());
         if let MatchResult::Hunks(hunks) = combined {
-            assert_eq!(hunks.len(), 1);
+            assert_eq!(hunks.len(), 2);
         } else {
             panic!("Expected Hunks result");
         }

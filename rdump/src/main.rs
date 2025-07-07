@@ -103,9 +103,13 @@ pub struct SearchArgs {
     pub color: ColorChoice,
     #[arg(long)]
     pub max_depth: Option<usize>,
-    #[arg(long, short = 'C', value_name = "LINES", help = "Show LINES of context around matches for --format=hunks")]
+    #[arg(
+        long,
+        short = 'C',
+        value_name = "LINES",
+        help = "Show LINES of context around matches for --format=hunks"
+    )]
     pub context: Option<usize>,
-
 
     /// List files with metadata instead of dumping content.
     #[arg(long)]
@@ -172,9 +176,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Search(args) => {
-            run_search(args)
-        }
+        Commands::Search(args) => run_search(args),
         Commands::Lang(args) => {
             // Default to `list` if no subcommand is given for `lang`
             let action = args.action.unwrap_or(LangAction::List);

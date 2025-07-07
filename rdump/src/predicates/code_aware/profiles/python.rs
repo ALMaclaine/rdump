@@ -26,10 +26,10 @@ pub(super) fn create_python_profile() -> LanguageProfile {
         .to_string(),
     );
 
-   // Query for function and method call sites.
-   queries.insert(
-       PredicateKey::Call,
-       "
+    // Query for function and method call sites.
+    queries.insert(
+        PredicateKey::Call,
+        "
        (call
            function: [
                (identifier) @match
@@ -37,8 +37,8 @@ pub(super) fn create_python_profile() -> LanguageProfile {
            ]
        )
        "
-       .to_string(),
-   );
+        .to_string(),
+    );
 
     queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
     queries.insert(PredicateKey::Str, "(string) @match".to_string());

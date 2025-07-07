@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 
 pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool> {
     let query = query.trim();
-    let (op, size_str) = if query.starts_with(|c: char| c == '>' || c == '<' || c == '=') {
+    let (op, size_str) = if query.starts_with(['>', '<', '=']) {
         query.split_at(1)
     } else {
         ("=", query)

@@ -60,7 +60,7 @@ fn test_comment_and_class_predicates_python() {
         .arg("comment:FIXME & class:Helper")
         .assert()
         .success()
-        .stdout(predicate::str::is_empty());
+        .stdout(predicate::str::contains("helper.py"));
 }
 
 #[test]

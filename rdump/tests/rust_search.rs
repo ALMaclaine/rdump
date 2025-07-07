@@ -175,7 +175,8 @@ fn test_type_and_struct_predicates_rust() {
         .arg("type:UserId & struct:User")
         .assert()
         .success()
-        .stdout(predicate::str::is_empty());
+        .stdout(predicate::str::contains("src/lib.rs"))
+        .stdout(predicate::str::contains("src/main.rs").not());
 }
 
 #[test]
@@ -205,7 +206,8 @@ fn test_logical_operators_with_hunks() {
         .arg("struct:Cli & comment:TODO")
         .assert()
         .success()
-        .stdout(predicate::str::is_empty());
+        .stdout(predicate::str::contains("src/main.rs"))
+        .stdout(predicate::str::contains("src/lib.rs").not());
 }
 
 #[test]
@@ -243,8 +245,8 @@ fn test_and_of_semantic_predicates() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(
         lines.len(),
-        0,
-        "Expected exactly 0 files, but found {}: {:?}",
+        2,
+        "Expected exactly 2 files, but found {}: {:?}",
         lines.len(),
         lines
     );

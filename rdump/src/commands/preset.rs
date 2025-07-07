@@ -14,7 +14,7 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
                 println!("Available presets:");
                 let max_len = config.presets.keys().map(|k| k.len()).max().unwrap_or(0);
                 for (name, query) in config.presets {
-                    println!("  {:<width$} : {}", name, query, width = max_len);
+                    println!("  {name:<max_len$} : {query}");
                 }
             }
         }
@@ -29,7 +29,7 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
                 Config::default()
             };
 
-            println!("Adding/updating preset '{}'...", name);
+            println!("Adding/updating preset '{name}'...");
             config.presets.insert(name, query);
             config::save_config(&config)?;
         }
@@ -46,7 +46,7 @@ pub fn run_preset(action: PresetAction) -> Result<()> {
             let mut config: Config = toml::from_str(&fs::read_to_string(&path)?)?;
 
             if config.presets.remove(&name).is_some() {
-                println!("Removing preset '{}'...", name);
+                println!("Removing preset '{name}'...");
                 config::save_config(&config)?;
             } else {
                 return Err(anyhow!("Preset '{}' not found in global config.", name));

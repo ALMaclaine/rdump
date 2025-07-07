@@ -18,9 +18,7 @@ use crate::predicates;
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
     // --- Handle Shorthand Flags ---
-    if args.no_headers {
-        args.format = crate::Format::Cat;
-    }
+
     if args.find {
         args.format = crate::Format::Find;
     }
@@ -36,9 +34,9 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
             .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
 
         if final_query.is_empty() {
-            final_query = format!("({})", preset_query);
+            final_query = format!("({preset_query})");
         } else {
-            final_query = format!("({}) & {}", preset_query, final_query);
+            final_query = format!("({preset_query}) & {final_query}");
         }
     }
 
@@ -123,6 +121,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         &matching_files,
         &args.format,
         args.line_numbers,
+        args.no_headers,
         use_color,
         args.context.unwrap_or(0),
     )?;
@@ -158,14 +157,14 @@ fn get_candidate_files(
            __pycache__/
        ";
         let mut temp_ignore = NamedTempFile::new()?;
-        write!(temp_ignore, "{}", default_ignores)?;
+        write!(temp_ignore, "{default_ignores}")?;
         walker_builder.add_ignore(temp_ignore.path());
 
         // Layer 2: A user's custom global ignore file.
         if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
             if global_ignore_path.exists() {
                 if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
-                    eprintln!("Warning: could not add global ignore file: {}", err);
+                    eprintln!("Warning: could not add global ignore file: {err}");
                 }
             }
         }
@@ -183,7 +182,7 @@ fn get_candidate_files(
 
     for result in walker_builder.build() {
         let entry = result?;
-        if entry.file_type().map_or(false, |ft| ft.is_file()) {
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
             files.push(entry.into_path());
         }
     }
