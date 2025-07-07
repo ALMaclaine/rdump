@@ -22,7 +22,9 @@ impl PredicateEvaluator for NameEvaluator {
             ..Default::default()
         };
         let pattern = Pattern::new(value)?;
-        Ok(MatchResult::Boolean(pattern.matches_with(file_name, options)))
+        Ok(MatchResult::Boolean(
+            pattern.matches_with(file_name, options),
+        ))
     }
 }
 
@@ -57,6 +59,20 @@ mod tests {
         );
         assert!(!evaluator
             .evaluate(&mut context1, &PredicateKey::Name, "*.rs")
+            .unwrap()
+            .is_match());
+    }
+
+    #[test]
+    fn test_name_evaluator_case_insensitive() {
+        let mut context = FileContext::new(PathBuf::from("/home/user/MyFile.txt"));
+        let evaluator = NameEvaluator;
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Name, "myfile.txt")
+            .unwrap()
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Name, "MYFILE.TXT")
             .unwrap()
             .is_match());
     }
