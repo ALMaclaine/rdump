@@ -525,3 +525,26 @@ fn test_path_predicate_cli() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(predicate::str::contains("insane_test_bed/sub/dir/some_file.txt"));
     Ok(())
 }
+
+#[test]
+fn test_path_predicate_deep_glob_cli() -> Result<(), Box<dyn std::error::Error>> {
+    // Setup a temporary directory with a deep structure
+    let dir = tempdir()?;
+    let root = dir.path();
+    let deep_path = root.join("level1/level2/hooks/my-feature");
+    fs::create_dir_all(&deep_path)?;
+    fs::File::create(deep_path.join("use-boolean.js"))?;
+
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(root); // Run from the temp dir root
+    cmd.arg("search")
+        .arg("path:hooks/*/use-boolean.js") // The intuitive glob
+        .arg("--format")
+        .arg("paths");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("use-boolean.js"));
+
+    Ok(())
+}
