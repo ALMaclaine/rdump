@@ -16,3 +16,4 @@ rdump/node_modules/
 
 # Other compiler-generated files
 *.d
+insane_test_bed/hooks/

@@ -3,4 +3,4 @@
 - **Added Test**: Added a dedicated test case (`test_format_markdown_ignores_color_flag`) to `formatter.rs` to verify the fix and prevent regressions.
 
 2025-07-08:
-- **Updated `GEMINI.md`**: Added a new rule to continuously refine `GEMINI.md` based on user interactions and project discoveries.
+- **Updated `GEMINI.md`**: Added a new rule to continuously refine `GEMINI.md` based on user interactions and project discoveries.2025-07-08: Modified the 'path' predicate to support glob-style wildcards. If a wildcard is present, the predicate performs a glob match against the full path. Otherwise, it performs a simple substring 'contains' search. This allows for more flexible path matching without breaking simple cases.

@@ -501,3 +501,27 @@ fn test_line_numbers_with_hunks() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(predicate::str::contains("2 |     println!(\"Hello\");"));
     Ok(())
 }
+
+#[test]
+fn test_path_predicate_cli() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rdump")?;
+    // Test glob matching
+    cmd.arg("search")
+        .arg("path:**/sub/dir/*")
+        .arg("--format")
+        .arg("paths");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("insane_test_bed/sub/dir/some_file.txt"));
+
+    // Test contains matching
+    let mut cmd2 = Command::cargo_bin("rdump")?;
+    cmd2.arg("search")
+        .arg("path:sub/dir")
+        .arg("--format")
+        .arg("paths");
+    cmd2.assert()
+        .success()
+        .stdout(predicate::str::contains("insane_test_bed/sub/dir/some_file.txt"));
+    Ok(())
+}
