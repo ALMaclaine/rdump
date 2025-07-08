@@ -14,26 +14,25 @@ impl PredicateEvaluator for InPathEvaluator {
         _key: &PredicateKey,
         value: &str,
     ) -> Result<MatchResult> {
-        // The `value` is the directory path provided by the user.
-        // We need to resolve it to an absolute path to perform a reliable check.
         let target_dir = PathBuf::from(value);
         let absolute_target_dir = if target_dir.is_absolute() {
             target_dir
         } else {
-            // If the user provides a relative path, it's relative to the current working dir.
-            // We need to get the CWD from the context or environment.
-            // For now, let's assume we can get it from the context's root.
-            // This might need adjustment based on how the evaluator's context is built.
-            let root = &context.root;
-            root.join(target_dir)
+            context.root.join(target_dir)
         };
 
-        // Normalize both paths to handle `.` and `..` components.
-        let absolute_target_dir = dunce::canonicalize(&absolute_target_dir)?;
-        let file_path = &context.path;
+        // If the target directory doesn't exist, it can't contain any files.
+        if !absolute_target_dir.exists() {
+            return Ok(MatchResult::Boolean(false));
+        }
+
+        // Canonicalize both paths to resolve any `.` or `..` components.
+        // This ensures a reliable comparison.
+        let canonical_target = dunce::canonicalize(&absolute_target_dir)?;
+        let canonical_file_path = dunce::canonicalize(&context.path)?;
 
         Ok(MatchResult::Boolean(
-            file_path.starts_with(&absolute_target_dir),
+            canonical_file_path.starts_with(&canonical_target),
         ))
     }
 }
@@ -106,6 +105,11 @@ mod tests {
         // 7. A file is considered to be "in" the directory represented by its own path
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::In, main_rs_path.to_str().unwrap())?
+            .is_match());
+
+        // 8. Non-existent directory should not error, just return false
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::In, "non_existent_dir")?
             .is_match());
 
         Ok(())
