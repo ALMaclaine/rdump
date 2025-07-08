@@ -30,3 +30,5 @@ This file contains notes and observations about the `rdump` project to aid in de
 
 1.  **Always Add Tests**: For any bug fix or feature addition, a corresponding test must be added to verify the change and prevent regressions.
 2.  **Log All Changes**: All modifications, including bug fixes and new features, must be logged in the `GEMINI_EDITS.log` file. The log entry should be dated and clearly describe the change.
+3.  **Continuously Refine `GEMINI.md`**: Actively look for opportunities to improve and expand this document based on interactions and new discoveries about the project.
+

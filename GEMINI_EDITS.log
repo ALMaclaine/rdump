@@ -1,3 +1,6 @@
 2025-07-08:
 - **Fixed Markdown Output**: Corrected a bug where the `--format markdown` option would include ANSI color codes in the output file if `--color=always` was set. The `formatter.rs` module was updated to ensure markdown output *always* uses fenced code blocks and never includes terminal escape codes, regardless of the color setting.
 - **Added Test**: Added a dedicated test case (`test_format_markdown_ignores_color_flag`) to `formatter.rs` to verify the fix and prevent regressions.
+
+2025-07-08:
+- **Updated `GEMINI.md`**: Added a new rule to continuously refine `GEMINI.md` based on user interactions and project discoveries.
