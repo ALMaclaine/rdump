@@ -21,13 +21,10 @@ impl PredicateEvaluator for InPathEvaluator {
             // --- Wildcard Logic ---
             let glob = Glob::new(value)?.compile_matcher();
 
-            // We match the glob pattern against the file's parent directory.
-            // If there's no parent (e.g., file is at the root "/"), it's not "in" a directory.
             if let Some(parent) = context.path.parent() {
-                // The glob is matched against the entire parent path.
-                // For example, a glob "**/src" will match a parent path like "/home/user/project/src".
-                // A glob "/home/user/project_*/src" will also work as expected.
-                Ok(MatchResult::Boolean(glob.is_match(parent)))
+                // Strip the root from the parent path to make the match relative.
+                let relative_parent = parent.strip_prefix(&context.root).unwrap_or(parent);
+                Ok(MatchResult::Boolean(glob.is_match(relative_parent)))
             } else {
                 Ok(MatchResult::Boolean(false))
             }
@@ -187,20 +184,15 @@ mod tests {
             .evaluate(&mut context_c, &PredicateKey::In, "**/src")?
             .is_match());
 
-        // 2. `project_*/src` glob needs to match against the absolute path.
-        let project_wildcard_glob = root_path
-            .join("project_*")
-            .join("src")
-            .to_string_lossy()
-            .to_string();
+        // 2. `project_*/src` glob should match relative to the root.
         assert!(evaluator
-            .evaluate(&mut context_a, &PredicateKey::In, &project_wildcard_glob)?
+            .evaluate(&mut context_a, &PredicateKey::In, "project_a/src")?
             .is_match());
         assert!(!evaluator
-            .evaluate(&mut context_b, &PredicateKey::In, &project_wildcard_glob)?
+            .evaluate(&mut context_b, &PredicateKey::In, "project_*/src")?
             .is_match());
         assert!(!evaluator
-            .evaluate(&mut context_c, &PredicateKey::In, &project_wildcard_glob)?
+            .evaluate(&mut context_c, &PredicateKey::In, "project_*/src")?
             .is_match());
 
         // 3. More specific glob `**/project_a/s?c`
@@ -225,6 +217,42 @@ mod tests {
             .is_match());
         assert!(!evaluator
             .evaluate(&mut context_c, &PredicateKey::In, "**/so*ce")?
+            .is_match());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_in_path_evaluator_relative_wildcard() -> Result<()> {
+        let evaluator = InPathEvaluator;
+
+        // Create a temporary directory structure
+        let root_dir = tempdir()?;
+        let root_path = root_dir.path();
+
+        let project_a_src = root_path.join("project_a").join("src");
+        fs::create_dir_all(&project_a_src)?;
+
+        let file_a = project_a_src.join("main.rs");
+        fs::write(&file_a, "")?;
+
+        // The context's root is the temporary directory we created.
+        let mut context_a = FileContext::new(file_a, root_path.to_path_buf());
+
+        // This glob is relative to the context's root.
+        // It should match `.../project_a/src`
+        assert!(evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, "project_a/*")?
+            .is_match());
+
+        // This glob should not match.
+        assert!(!evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, "project_b/*")?
+            .is_match());
+            
+        // This glob should also match.
+        assert!(evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, "project_a/s?c")?
             .is_match());
 
         Ok(())
