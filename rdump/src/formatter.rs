@@ -32,12 +32,13 @@ fn print_markdown_format(
     matching_files: &[(PathBuf, Vec<Range>)],
     with_line_numbers: bool,
     with_headers: bool,
-    use_color: bool,
 ) -> Result<()> {
     for (i, (path, _)) in matching_files.iter().enumerate() {
         if with_headers {
             if i > 0 {
-                writeln!(writer, "\n---\n")?;
+                writeln!(writer, "
+---
+")?;
             }
             writeln!(writer, "File: {}", path.display())?;
             writeln!(writer, "---")?;
@@ -45,13 +46,8 @@ fn print_markdown_format(
         let content = fs::read_to_string(path)?;
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
-        if use_color {
-            // To terminal: use ANSI codes for color
-            print_highlighted_content(writer, &content, extension, with_line_numbers, 0)?;
-        } else {
-            // To file/pipe: use Markdown fences for color
-            print_markdown_fenced_content(writer, &content, extension, with_line_numbers, 0)?;
-        }
+        // Markdown format should always use fenced content, not ANSI colors.
+        print_markdown_fenced_content(writer, &content, extension, with_line_numbers, 0)?;
     }
     Ok(())
 }
@@ -205,13 +201,9 @@ pub fn print_output(
         Format::Paths => print_paths_format(writer, matching_files)?,
         Format::Json => print_json_format(writer, matching_files)?,
         Format::Cat => print_cat_format(writer, matching_files, with_line_numbers, use_color)?,
-        Format::Markdown => print_markdown_format(
-            writer,
-            matching_files,
-            with_line_numbers,
-            !no_headers,
-            use_color,
-        )?,
+        Format::Markdown => {
+            print_markdown_format(writer, matching_files, with_line_numbers, !no_headers)?
+        }
         Format::Hunks => print_hunks_format(
             writer,
             matching_files,
@@ -477,6 +469,28 @@ mod tests {
         assert!(
             !output.contains("```"),
             "Should not contain markdown fences"
+        );
+    }
+
+    #[test]
+    fn test_format_markdown_ignores_color_flag() {
+        let file = create_temp_file_with_content("fn main() {}");
+        let paths = vec![(file.path().to_path_buf(), vec![])];
+        let mut writer = Vec::new();
+
+        // Test with use_color = true, which should be ignored for the Markdown format.
+        print_output(&mut writer, &paths, &Format::Markdown, false, false, true, 0).unwrap();
+
+        let output = String::from_utf8(writer).unwrap();
+
+        // Check that the output is standard markdown and does not contain color codes.
+        assert!(
+            output.contains("```"),
+            "Markdown format should use code fences"
+        );
+        assert!(
+            !output.contains("\x1b["),
+            "Markdown format should not contain ANSI escape codes"
         );
     }
 }
