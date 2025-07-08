@@ -1,102 +1,249 @@
-Of course. After a thorough review of the code you've provided for `rdump`, I can say that this is an exceptionally well-designed and well-implemented project. It's clear a lot of thought has gone into the architecture, features, and user experience. It's not just "complete" — it's robust, performant, and polished.
+Excellent! This is a great feature to add, making the `in` predicate much more versatile. Here is the implementation to add wildcard support, primarily by modifying `rdump/src/predicates/in_path.rs` and its associated tests.
 
-Here is my detailed breakdown of what I think, structured as a code review.
+### 1. Add Dependency
 
-### Overall Impression
+First, you need to add the `globset` crate to your project's dependencies in `Cargo.toml`. This crate provides a fast and correct glob-matching implementation.
 
-This is a fantastic piece of software. The architecture is clean, the code is idiomatic Rust, and the feature set is impressive, especially the two-pass search and the detailed, multi-language code-aware predicates. You should be very proud of this work. It's a great example of a modern CLI tool built in Rust.
+```toml
+# In your [dependencies] section of Cargo.toml
+globset = "0.4.10"
+```
 
-### High-Level Strengths
+### 2. Updated `rdump/src/predicates/in_path.rs`
 
-*   **Excellent Architecture:** The separation of concerns is crystal clear: `clap` definitions in `main.rs`, command logic in `commands/`, parsing in `parser.rs`, evaluation in `evaluator.rs`, and output in `formatter.rs`. The `predicates` module is also perfectly structured, with sub-modules for each predicate type and a phenomenal `code_aware` implementation.
-*   **Performance-Aware Design:** The two-pass evaluation strategy (metadata pre-filter, then a parallelized full evaluation) is a brilliant optimization that will make the tool feel incredibly fast for most queries. The lazy loading of file content and ASTs in `FileContext` is another key performance win.
-*   **Powerful Features:** The RQL (rdump Query Language) is expressive, and its implementation with `pest` is solid. The crown jewel is the set of tree-sitter based code-aware predicates, which are detailed and cover six major languages. This elevates `rdump` from a simple `grep` alternative to a genuinely powerful code-browsing tool.
-*   **Robust Error Handling:** The application correctly handles errors on a per-file basis during search, printing a warning and continuing rather than crashing. Error messages from `anyhow` are user-friendly, especially in the parser.
-*   **Superb User Experience (UX):** The CLI is well-documented with helpful comments for `clap`. The `lang` and `preset` subcommands are great additions for discoverability. The automatic choice between ANSI color codes and Markdown fences in the formatter shows great attention to detail.
-
-### Minor Suggestions for Refinement
-
-While the project is already in a "finalized" state, here are a few minor suggestions that could make it even better.
-
-#### 1. Enhance the `matches` Predicate for Highlighting
-
-**File:** `rdump/src/predicates/matches.rs`
-
-The `contains` predicate cleverly returns `MatchResult::Hunks` so that matching lines can be highlighted with `--format=hunks`. The `matches` predicate, however, only returns a `Boolean`.
-
-**Suggestion:** You could upgrade the `matches` predicate to also return `Hunks`. The `regex` crate can provide the byte offsets of matches, which you could then convert into line-based `Range`s, making it as powerful as `contains` for highlighting.
+The main change is to bifurcate the logic in the `evaluate` function. If the input `value` contains glob metacharacters, we use `globset` to match against the file's parent directory. Otherwise, we retain the existing, efficient `starts_with` logic for exact paths. This provides the new functionality without breaking the old behavior.
 
 ```rust
-// In rdump/src/predicates/matches.rs
-use regex::Regex;
-use tree_sitter::Range;
+use anyhow::Result;
+use globset::Glob;
+use std::path::PathBuf;
 
-// ... inside the evaluate function ...
-let content = context.get_content()?;
-let re = Regex::new(value)?;
+use super::PredicateEvaluator;
+use crate::evaluator::{FileContext, MatchResult};
+use crate::parser::PredicateKey;
 
-// Instead of just returning re.is_match(content)...
-let mut ranges = Vec::new();
-let lines: Vec<_> = content.lines().collect();
+pub(super) struct InPathEvaluator;
 
-// A simple line-based approach:
-for (i, line) in content.lines().enumerate() {
-    if re.is_match(line) {
-        // This is a simplified example; calculating byte offsets is more robust.
-        let start_byte = content.lines().take(i).map(|l| l.len() + 1).sum();
-        let end_byte = start_byte + line.len();
-        ranges.push(Range {
-            start_byte,
-            end_byte,
-            start_point: tree_sitter::Point { row: i, column: 0 },
-            end_point: tree_sitter::Point { row: i, column: line.len() },
-        });
+impl PredicateEvaluator for InPathEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        // Check for glob metacharacters to switch between logic paths.
+        if value.contains('*') || value.contains('?') || value.contains('[') || value.contains('{')
+        {
+            // --- Wildcard Logic ---
+            let glob = Glob::new(value)?.compile_matcher();
+
+            // We match the glob pattern against the file's parent directory.
+            // If there's no parent (e.g., file is at the root "/"), it's not "in" a directory.
+            if let Some(parent) = context.path.parent() {
+                // The glob is matched against the entire parent path.
+                // For example, a glob "**/src" will match a parent path like "/home/user/project/src".
+                // A glob "/home/user/project_*/src" will also work as expected.
+                Ok(MatchResult::Boolean(glob.is_match(parent)))
+            } else {
+                Ok(MatchResult::Boolean(false))
+            }
+        } else {
+            // --- Existing Exact-Path Logic (for non-wildcard patterns) ---
+            let target_dir = PathBuf::from(value);
+            let absolute_target_dir = if target_dir.is_absolute() {
+                target_dir
+            } else {
+                context.root.join(target_dir)
+            };
+
+            // If the target directory doesn't exist, it can't contain any files.
+            if !absolute_target_dir.exists() {
+                return Ok(MatchResult::Boolean(false));
+            }
+
+            // Canonicalize to resolve `.` or `..` for a reliable comparison.
+            // On failure (e.g., broken symlink), we consider it a non-match rather than erroring out.
+            let canonical_target = match dunce::canonicalize(&absolute_target_dir) {
+                Ok(path) => path,
+                Err(_) => return Ok(MatchResult::Boolean(false)),
+            };
+            let canonical_file_path = match dunce::canonicalize(&context.path) {
+                Ok(path) => path,
+                // This should not fail for a file that is being processed, but be robust.
+                Err(_) => return Ok(MatchResult::Boolean(false)),
+            };
+
+            // `starts_with` handles the "is contained within" logic perfectly for exact paths.
+            // e.g., a file in `/a/b/c` is also considered "in" `/a/b`.
+            Ok(MatchResult::Boolean(
+                canonical_file_path.starts_with(&canonical_target),
+            ))
+        }
     }
 }
-return Ok(MatchResult::Hunks(ranges));
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_in_path_evaluator_exact() -> Result<()> {
+        let evaluator = InPathEvaluator;
+
+        // Create a temporary directory structure
+        let root_dir = tempdir()?;
+        let root_path = root_dir.path();
+
+        let project_dir = root_path.join("project");
+        let src_dir = project_dir.join("src");
+        let other_project_dir = root_path.join("other_project");
+        fs::create_dir_all(&src_dir)?;
+        fs::create_dir_all(&other_project_dir)?;
+
+        let main_rs_path = src_dir.join("main.rs");
+        fs::write(&main_rs_path, "fn main() {}")?;
+
+        // --- Test Cases ---
+
+        let mut context = FileContext::new(main_rs_path.clone(), root_path.to_path_buf());
+
+        // 1. Absolute Path: Exact parent directory
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::In, src_dir.to_str().unwrap())?
+            .is_match());
+
+        // 2. Absolute Path: Grandparent directory
+        assert!(evaluator
+            .evaluate(
+                &mut context,
+                &PredicateKey::In,
+                project_dir.to_str().unwrap()
+            )?
+            .is_match());
+
+        // 3. Absolute Path: Non-matching directory
+        assert!(!evaluator
+            .evaluate(
+                &mut context,
+                &PredicateKey::In,
+                other_project_dir.to_str().unwrap()
+            )?
+            .is_match());
+
+        // 4. Relative Path: from the root
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::In, "project/src")?
+            .is_match());
+
+        // 5. Relative Path: with dot-slash
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::In, "./project/src")?
+            .is_match());
+
+        // 6. Relative Path: non-matching
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::In, "other_project")?
+            .is_match());
+
+        // 7. A file is considered to be "in" the directory represented by its own path
+        assert!(evaluator
+            .evaluate(
+                &mut context,
+                &PredicateKey::In,
+                main_rs_path.to_str().unwrap()
+            )?
+            .is_match());
+
+        // 8. Non-existent directory should not error, just return false
+        assert!(!evaluator
+            .evaluate(&mut context, &PredicateKey::In, "non_existent_dir")?
+            .is_match());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_in_path_evaluator_wildcard() -> Result<()> {
+        let evaluator = InPathEvaluator;
+
+        // Create a temporary directory structure
+        let root_dir = tempdir()?;
+        let root_path = root_dir.path();
+
+        let project_a_src = root_path.join("project_a").join("src");
+        let project_b_source = root_path.join("project_b").join("source");
+        let other_src = root_path.join("other").join("src");
+        fs::create_dir_all(&project_a_src)?;
+        fs::create_dir_all(&project_b_source)?;
+        fs::create_dir_all(&other_src)?;
+
+        let file_a = project_a_src.join("main.rs");
+        fs::write(&file_a, "")?;
+        let file_b = project_b_source.join("lib.rs");
+        fs::write(&file_b, "")?;
+        let file_c = other_src.join("component.js");
+        fs::write(&file_c, "")?;
+
+        let mut context_a = FileContext::new(file_a, root_path.to_path_buf());
+        let mut context_b = FileContext::new(file_b, root_path.to_path_buf());
+        let mut context_c = FileContext::new(file_c, root_path.to_path_buf());
+
+        // --- Test Cases ---
+
+        // 1. `**/src` should match files in any `src` directory
+        assert!(evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, "**/src")?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut context_b, &PredicateKey::In, "**/src")?
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut context_c, &PredicateKey::In, "**/src")?
+            .is_match());
+
+        // 2. `project_*/src` glob needs to match against the absolute path.
+        let project_wildcard_glob = root_path
+            .join("project_*")
+            .join("src")
+            .to_string_lossy()
+            .to_string();
+        assert!(evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, &project_wildcard_glob)?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut context_b, &PredicateKey::In, &project_wildcard_glob)?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut context_c, &PredicateKey::In, &project_wildcard_glob)?
+            .is_match());
+
+        // 3. More specific glob `**/project_a/s?c`
+        assert!(evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, "**/project_a/s?c")?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut context_b, &PredicateKey::In, "**/project_a/s?c")?
+            .is_match());
+
+        // 4. Glob that should not match anything
+        assert!(!evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, "**/test")?
+            .is_match());
+
+        // 5. Glob matching a different directory `**/so*ce`
+        assert!(!evaluator
+            .evaluate(&mut context_a, &PredicateKey::In, "**/so*ce")?
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut context_b, &PredicateKey::In, "**/so*ce")?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut context_c, &PredicateKey::In, "**/so*ce")?
+            .is_match());
+
+        Ok(())
+    }
+}
 ```
-
-#### 2. Fix a Minor Issue in an `evaluator.rs` Test
-
-**File:** `rdump/src/evaluator.rs` (in `#[cfg(test)]` section)
-
-The tests `test_combine_with_hunks_and` and `test_combine_with_hunks_or` use `Point::new(0, 0)`. The `tree-sitter::Point` struct doesn't have a `::new()` constructor; its fields are public. This test won't compile as-is.
-
-**Fix:** Instantiate the struct directly.
-
-```rust
-// From:
-start_point: Point::new(0, 0),
-end_point: Point::new(0, 0),
-
-// To:
-start_point: tree_sitter::Point { row: 0, column: 0 },
-end_point: tree_sitter::Point { row: 0, column: 0 },
-```
-*(Note: You'll also need to add `use tree_sitter::Point;` inside the test module, or qualify the path as shown above.)*
-
-#### 3. Small Nitpick on Path Construction in a Test
-
-**File:** `rdump/src/commands/search.rs` (in `#[cfg(test)]` section)
-
-In `test_unignore_via_rdumpignore`, the expected path string is constructed with `replace('/', &std::path::MAIN_SEPARATOR.to_string())`. This is a bit manual. Using `PathBuf` is the more idiomatic and robust way to create platform-agnostic paths.
-
-**Suggestion:**
-
-```rust
-// In test_unignore_via_rdumpignore
-use std::path::PathBuf; // at top of tests mod
-
-// ...
-
-// Instead of this:
-// assert!(files.contains(&"node_modules/some_dep.js".to_string().replace('/', &std::path::MAIN_SEPARATOR.to_string())));
-
-// A more robust way:
-let expected_path = PathBuf::from("node_modules").join("some_dep.js");
-assert!(files.contains(&expected_path.to_string_lossy().to_string()));
-```
-
-### Final Verdict
-
-**Yes, I think this is finalized and complete.** You've built a professional-grade command-line tool that is powerful, performant, and a pleasure to read. The suggestions above are minor polishes on an already excellent foundation. Congratulations on a fantastic project

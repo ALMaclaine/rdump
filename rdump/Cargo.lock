@@ -836,6 +836,7 @@ dependencies = [
  "dirs",
  "dunce",
  "glob",
+ "globset",
  "ignore",
  "once_cell",
  "pest",
