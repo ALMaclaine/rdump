@@ -57,6 +57,7 @@ pub struct SearchArgs {
     ///   ext:<str>          - File extension (e.g., "rs", "toml")
     ///   name:<glob>        - File name glob pattern (e.g., "test_*.rs")
     ///   path:<str>         - Substring in the full file path
+    ///   in:<path>          - Directory path to search within
     ///   size:[>|<]<num>[kb|mb] - File size (e.g., ">10kb")
     ///   modified:[>|<]<num>[h|d|w] - Modified time (e.g., "<2d")
     ///

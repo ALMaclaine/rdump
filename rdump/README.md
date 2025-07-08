@@ -327,6 +327,7 @@ cargo build --release
 | `ext` | `ext:ts` | Matches file extension. Case-insensitive. |
 | `name`| `name:"*_test.go"` | Matches filename (basename) against a glob pattern. |
 | `path`| `path:src/api` | Matches if the substring appears anywhere in the full path. |
+| `in`       | `in:"src/commands"`         | The directory path to search in. Matches all files that are descendants of the given directory.         |
 | `size`| `size:>=10kb` | Filters by size. Operators: `>`, `<`, `>=`, `<=`, `=`. Units: `b`, `kb`, `mb`, `gb`. |
 | `modified`| `modified:<2d` | Filters by modification time. Units: `m`, `h`, `d`, `w`, `y`. |
 
