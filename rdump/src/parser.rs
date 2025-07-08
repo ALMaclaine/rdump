@@ -16,6 +16,7 @@ pub enum PredicateKey {
     Matches,
     Size,
     Modified,
+    In,
     // --- SEMANTIC PREDICATES ---
     // Generic
     Def,
@@ -47,6 +48,7 @@ impl AsRef<str> for PredicateKey {
             PredicateKey::Matches => "matches",
             PredicateKey::Size => "size",
             PredicateKey::Modified => "modified",
+            PredicateKey::In => "in",
             PredicateKey::Def => "def",
             PredicateKey::Func => "func",
             PredicateKey::Import => "import",
@@ -74,6 +76,7 @@ impl From<&str> for PredicateKey {
             "matches" => Self::Matches,
             "size" => Self::Size,
             "modified" => Self::Modified,
+            "in" => Self::In,
             // --- SEMANTIC ---
             "def" => Self::Def,
             "func" => Self::Func,

@@ -39,7 +39,10 @@ mod tests {
 
     #[test]
     fn test_path_evaluator_contains() {
-        let mut context = FileContext::new(PathBuf::from("/home/user/project/src/main.rs"));
+        let mut context = FileContext::new(
+            PathBuf::from("/home/user/project/src/main.rs"),
+            PathBuf::from("/"),
+        );
         let evaluator = PathEvaluator;
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Path, "project/src")
@@ -61,7 +64,10 @@ mod tests {
 
     #[test]
     fn test_path_evaluator_wildcard() {
-        let mut context = FileContext::new(PathBuf::from("/home/user/project/src/main.rs"));
+        let mut context = FileContext::new(
+            PathBuf::from("/home/user/project/src/main.rs"),
+            PathBuf::from("/"),
+        );
         let evaluator = PathEvaluator;
 
         assert!(evaluator
@@ -84,7 +90,10 @@ mod tests {
 
     #[test]
     fn test_empty_path_query() {
-        let mut context = FileContext::new(PathBuf::from("/home/user/project/src/main.rs"));
+        let mut context = FileContext::new(
+            PathBuf::from("/home/user/project/src/main.rs"),
+            PathBuf::from("/"),
+        );
         let evaluator = PathEvaluator;
 
         // Empty string should match everything with `contains`

@@ -40,6 +40,7 @@ impl PredicateEvaluator for MatchesEvaluator {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
@@ -51,7 +52,7 @@ mod tests {
     #[test]
     fn test_matches_evaluator() {
         let file = create_temp_file("version = \"0.1.0\"\nauthor = \"test\"");
-        let mut context = FileContext::new(file.path().to_path_buf());
+        let mut context = FileContext::new(file.path().to_path_buf(), PathBuf::from("/"));
         let evaluator = MatchesEvaluator;
         // Simple regex
         assert!(evaluator

@@ -24,6 +24,7 @@ impl PredicateEvaluator for ModifiedEvaluator {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
@@ -35,7 +36,7 @@ mod tests {
     #[test]
     fn test_modified_evaluator() {
         let file = create_temp_file("content");
-        let mut context = FileContext::new(file.path().to_path_buf());
+        let mut context = FileContext::new(file.path().to_path_buf(), PathBuf::from("/"));
 
         let evaluator = ModifiedEvaluator;
         // File was just created

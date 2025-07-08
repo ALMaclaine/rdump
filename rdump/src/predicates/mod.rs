@@ -2,6 +2,7 @@ pub mod code_aware;
 pub mod contains;
 pub mod ext;
 mod helpers;
+pub mod in_path;
 pub mod matches;
 pub mod modified;
 pub mod name;
@@ -11,6 +12,7 @@ pub mod size;
 use self::code_aware::CodeAwareEvaluator;
 use self::contains::ContainsEvaluator;
 use self::ext::ExtEvaluator;
+use self::in_path::InPathEvaluator;
 use self::matches::MatchesEvaluator;
 use self::modified::ModifiedEvaluator;
 use self::name::NameEvaluator;
@@ -42,6 +44,7 @@ pub fn create_metadata_predicate_registry(
     registry.insert(PredicateKey::Ext, Box::new(ExtEvaluator));
     registry.insert(PredicateKey::Name, Box::new(NameEvaluator));
     registry.insert(PredicateKey::Path, Box::new(PathEvaluator));
+    registry.insert(PredicateKey::In, Box::new(InPathEvaluator));
     registry.insert(PredicateKey::Size, Box::new(SizeEvaluator));
     registry.insert(PredicateKey::Modified, Box::new(ModifiedEvaluator));
 
@@ -109,36 +112,36 @@ mod tests {
         let evaluator = CodeAwareEvaluator;
 
         // --- Granular Defs ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Struct, "AppConfig")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Trait, "Runnable")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Type, "ConfigMap")
             .unwrap()
             .is_match());
 
         // --- Functions ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "run")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "launch_app")
             .unwrap()
             .is_match());
 
         // --- Calls ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "println")
@@ -146,7 +149,7 @@ mod tests {
                 .is_match(),
             "Should find function call"
         );
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             !evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "launch_app")
@@ -156,12 +159,12 @@ mod tests {
         );
 
         // --- Syntactic Content ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Comment, "TODO")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Str, "Launching...")
             .unwrap()
@@ -195,26 +198,26 @@ def process_data():
         let evaluator = CodeAwareEvaluator;
 
         // --- Granular Defs ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Class, "DataProcessor")
             .unwrap()
             .is_match());
 
         // --- Functions ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "process_data")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "connect")
             .unwrap()
             .is_match());
 
         // --- Calls ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "print")
@@ -222,7 +225,7 @@ def process_data():
                 .is_match(),
             "Should find multiple calls to print"
         );
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "DataProcessor")
@@ -230,7 +233,7 @@ def process_data():
                 .is_match(),
             "Should find constructor call"
         );
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "connect")
@@ -240,12 +243,12 @@ def process_data():
         );
 
         // --- Syntactic Content ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Comment, "FIXME")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Str, "secret_key")
             .unwrap()
@@ -274,22 +277,22 @@ def process_data():
 
         let evaluator = CodeAwareEvaluator;
 
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Def, "Logger")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "log")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Import, "fs/promises")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "Logger")
@@ -297,7 +300,7 @@ def process_data():
                 .is_match(),
             "Should find constructor call"
         );
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "log")
@@ -333,7 +336,7 @@ def process_data():
         let evaluator = CodeAwareEvaluator;
 
         // --- Granular Defs ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Def, "ApiClient")
@@ -341,17 +344,17 @@ def process_data():
                 .is_match(),
             "Should find class"
         );
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "fetchUser")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Import, "React")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "ApiClient")
@@ -359,7 +362,7 @@ def process_data():
                 .is_match(),
             "Should find TS constructor call"
         );
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(
             evaluator
                 .evaluate(&mut ctx, &PredicateKey::Call, "fetchUser")
@@ -369,12 +372,12 @@ def process_data():
         );
 
         // --- Syntactic Content ---
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Comment, "The URL")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Str, "https://api.example.com")
             .unwrap()
@@ -410,27 +413,27 @@ def process_data():
 
         let evaluator = CodeAwareEvaluator;
 
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Struct, "User")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "Greet")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Call, "Println")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Import, "fmt")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Comment, "represents a user")
             .unwrap()
@@ -461,32 +464,32 @@ def process_data():
 
         let evaluator = CodeAwareEvaluator;
 
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Class, "User")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Func, "greet")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Call, "println")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Import, "java.util.List")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Comment, "Represents a user")
             .unwrap()
             .is_match());
-        let mut ctx = FileContext::new(file_path.clone());
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
         assert!(evaluator
             .evaluate(&mut ctx, &PredicateKey::Str, "User created")
             .unwrap()

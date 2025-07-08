@@ -35,8 +35,8 @@ mod tests {
 
     #[test]
     fn test_name_evaluator() {
-        let mut context1 = FileContext::new(PathBuf::from("/home/user/Cargo.toml"));
-        let mut context2 = FileContext::new(PathBuf::from("/home/user/main.rs"));
+        let mut context1 = FileContext::new(PathBuf::from("/home/user/Cargo.toml"), PathBuf::from("/"));
+        let mut context2 = FileContext::new(PathBuf::from("/home/user/main.rs"), PathBuf::from("/"));
 
         let evaluator = NameEvaluator;
         assert!(evaluator
@@ -65,7 +65,8 @@ mod tests {
 
     #[test]
     fn test_name_evaluator_case_insensitive() {
-        let mut context = FileContext::new(PathBuf::from("/home/user/MyFile.txt"));
+        let mut context =
+            FileContext::new(PathBuf::from("/home/user/MyFile.txt"), PathBuf::from("/"));
         let evaluator = NameEvaluator;
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Name, "myfile.txt")

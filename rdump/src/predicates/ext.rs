@@ -27,10 +27,10 @@ mod tests {
 
     #[test]
     fn test_ext_evaluator() {
-        let mut context_rs = FileContext::new(PathBuf::from("main.rs"));
-        let mut context_toml = FileContext::new(PathBuf::from("Cargo.TOML"));
-        let mut context_no_ext = FileContext::new(PathBuf::from("README"));
-        let mut context_dotfile = FileContext::new(PathBuf::from(".bashrc"));
+        let mut context_rs = FileContext::new(PathBuf::from("main.rs"), PathBuf::from("/"));
+        let mut context_toml = FileContext::new(PathBuf::from("Cargo.TOML"), PathBuf::from("/"));
+        let mut context_no_ext = FileContext::new(PathBuf::from("README"), PathBuf::from("/"));
+        let mut context_dotfile = FileContext::new(PathBuf::from(".bashrc"), PathBuf::from("/"));
 
         let evaluator = ExtEvaluator;
         assert!(evaluator

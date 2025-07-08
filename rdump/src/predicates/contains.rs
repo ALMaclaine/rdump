@@ -39,6 +39,7 @@ impl PredicateEvaluator for ContainsEvaluator {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
     fn create_temp_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().unwrap();
@@ -48,7 +49,7 @@ mod tests {
     #[test]
     fn test_contains_evaluator() {
         let file = create_temp_file("Hello world\nThis is a test.");
-        let mut context = FileContext::new(file.path().to_path_buf());
+        let mut context = FileContext::new(file.path().to_path_buf(), PathBuf::from("/"));
         let evaluator = ContainsEvaluator;
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Contains, "world")

@@ -20,15 +20,17 @@ pub enum MatchResult {
 /// It lazily loads content and caches the tree-sitter AST.
 pub struct FileContext {
     pub path: PathBuf,
+    pub root: PathBuf,
     content: Option<String>,
     // Cache for the parsed tree-sitter AST
     tree: Option<Tree>,
 }
 
 impl FileContext {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, root: PathBuf) -> Self {
         FileContext {
             path,
+            root,
             content: None,
             tree: None,
         }
@@ -189,15 +191,7 @@ impl MatchResult {
 mod tests {
     use super::*;
     use crate::parser::LogicalOperator;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
     use tree_sitter::Point;
-
-    fn create_temp_file(content: &str) -> NamedTempFile {
-        let file = NamedTempFile::new().unwrap();
-        write!(file.as_file(), "{}", content).unwrap();
-        file
-    }
 
     #[test]
     fn test_combine_with_hunks_and() {

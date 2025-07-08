@@ -23,6 +23,7 @@ impl PredicateEvaluator for SizeEvaluator {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
     use tempfile::NamedTempFile;
 
     fn create_temp_file(content: &str) -> NamedTempFile {
@@ -34,7 +35,7 @@ mod tests {
     #[test]
     fn test_size_evaluator() {
         let file = create_temp_file("a".repeat(2000).as_str());
-        let mut context = FileContext::new(file.path().to_path_buf());
+        let mut context = FileContext::new(file.path().to_path_buf(), PathBuf::from("/"));
 
         let evaluator = SizeEvaluator;
         assert!(evaluator

@@ -64,7 +64,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let pre_filtered_files: Vec<PathBuf> = candidate_files
         .into_iter() // This pass is not parallel, it's fast enough.
         .filter(|path| {
-            let mut context = FileContext::new(path.clone());
+            let mut context = FileContext::new(path.clone(), args.root.clone());
             match pre_filter_evaluator.evaluate(&mut context) {
                 Ok(result) => result.is_match(),
                 Err(e) => {
@@ -90,7 +90,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let mut matching_files: Vec<(PathBuf, Vec<Range>)> = pre_filtered_files
         .par_iter()
         .filter_map(|path| {
-            let mut context = FileContext::new(path.clone());
+            let mut context = FileContext::new(path.clone(), args.root.clone());
             match evaluator.evaluate(&mut context) {
                 Ok(MatchResult::Boolean(true)) => Some((path.clone(), Vec::new())),
                 Ok(MatchResult::Boolean(false)) => None,
