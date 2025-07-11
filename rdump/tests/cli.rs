@@ -461,3 +461,18 @@ fn test_preset_error_handling() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_search_with_or_operator() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, root) = setup_test_dir();
+
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(&root);
+    cmd.arg("search").arg("ext:rs | contains:text");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("main.rs"))
+        .stdout(predicate::str::contains("other.txt"));
+    Ok(())
+}

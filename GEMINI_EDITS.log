@@ -1,3 +1,6 @@
 2025-07-11:
 - Modified `rdump/src/predicates/in_path.rs` to correctly handle relative paths with wildcards in the `in` predicate.
 - Modified `rdump/src/formatter.rs` to print plain text instead of markdown when the output is not a TTY.
+2025-07-11:
+- Fixed an ignored test in `rdump/tests/python_search.rs` and verified that the `call` predicate works for Python.
+- Added a new test to `rdump/tests/cli.rs` to ensure the `|` (or) operator works as expected.

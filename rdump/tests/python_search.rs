@@ -77,7 +77,6 @@ fn test_str_predicate_python() {
 }
 
 #[test]
-#[ignore]
 fn test_call_predicate_python() {
     let dir = setup_test_project();
     Command::cargo_bin("rdump")
@@ -87,6 +86,6 @@ fn test_call_predicate_python() {
         .arg("call:run_helper | call:do_setup")
         .assert()
         .success()
-        .stdout(predicate::str::contains("if __name__ == \"__main__\":"))
-        .stdout(predicate::str::contains("self.path ="));
+        .stdout(predicate::str::contains("self.do_setup()"))
+        .stdout(predicate::str::contains("run_helper()"));
 }
