@@ -38,7 +38,7 @@ pub enum Commands {
     Preset(PresetArgs),
 }
 
-#[derive(Debug, Clone, ValueEnum, Default)]
+#[derive(Debug, Clone, ValueEnum, Default, PartialEq)]
 pub enum ColorChoice {
     #[default]
     Auto,
@@ -82,8 +82,8 @@ pub struct SearchArgs {
     /// SYNTACTIC CONTENT:
     ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
     ///   str:<str>          - Text inside a string literal
-    #[arg(verbatim_doc_comment)]
-    pub query: Option<String>,
+    #[arg(verbatim_doc_comment, name = "QUERY_PARTS")]
+    pub query: Vec<String>,
     #[arg(long, short)]
     pub preset: Vec<String>,
     #[arg(short, long, default_value = ".")]

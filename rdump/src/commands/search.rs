@@ -27,7 +27,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     // --- Load Config and Build Query ---
     let config = config::load_config()?;
-    let mut final_query = args.query.take().unwrap_or_default();
+    let mut final_query = args.query.join(" ");
 
     for preset_name in args.preset.iter().rev() {
         let preset_query = config
@@ -38,7 +38,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         if final_query.is_empty() {
             final_query = format!("({preset_query})");
         } else {
-            final_query = format!("({preset_query}) & {final_query}");
+            final_query = format!("({preset_query}) & ({final_query})");
         }
     }
 
@@ -76,11 +76,19 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         .collect();
 
     // --- Determine if color should be used ---
-    let use_color = match args.color {
+    let mut use_color = match args.color {
         ColorChoice::Always => true,
         ColorChoice::Never => false,
         ColorChoice::Auto => atty::is(Stream::Stdout),
     };
+
+    // If the output format is `Cat` (likely for piping), we should not use color
+    // unless the user has explicitly forced it with `Always`.
+    if let crate::Format::Cat = args.format {
+        if args.color != ColorChoice::Always {
+            use_color = false;
+        }
+    }
 
     // --- 4. Main Evaluation Pass (Content + Semantic) ---
     // This pass uses the full evaluator on the smaller, pre-filtered set of files.

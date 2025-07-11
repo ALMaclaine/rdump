@@ -157,9 +157,9 @@ fn build_ast_from_logical_op(pair: Pair<Rule>) -> Result<AstNode> {
     let mut ast = build_ast_from_pairs(inner_pairs.next().unwrap())?;
 
     while let Some(op_pair) = inner_pairs.next() {
-        let op = match op_pair.as_str() {
-            "&" => LogicalOperator::And,
-            "|" => LogicalOperator::Or,
+        let op = match op_pair.as_str().to_lowercase().as_str() {
+            "&" | "and" => LogicalOperator::And,
+            "|" | "or" => LogicalOperator::Or,
             _ => unreachable!(),
         };
         let right_pair = inner_pairs.next().unwrap();
@@ -345,5 +345,55 @@ mod tests {
     fn test_error_on_whitespace_query() {
         let result = parse_query("   ");
         assert_eq!(result.unwrap_err().to_string(), "Query cannot be empty.");
+    }
+
+    #[test]
+    fn test_parse_keyword_operators() {
+        // AND
+        let ast_and = parse_query("ext:rs and name:\"foo\"").unwrap();
+        assert_eq!(
+            ast_and,
+            AstNode::LogicalOp(
+                LogicalOperator::And,
+                predicate(PredicateKey::Ext, "rs"),
+                predicate(PredicateKey::Name, "foo")
+            )
+        );
+
+        // OR
+        let ast_or = parse_query("ext:rs or ext:toml").unwrap();
+        assert_eq!(
+            ast_or,
+            AstNode::LogicalOp(
+                LogicalOperator::Or,
+                predicate(PredicateKey::Ext, "rs"),
+                predicate(PredicateKey::Ext, "toml")
+            )
+        );
+
+        // NOT
+        let ast_not = parse_query("not ext:rs").unwrap();
+        assert_eq!(ast_not, AstNode::Not(predicate(PredicateKey::Ext, "rs")));
+    }
+
+    #[test]
+    fn test_parse_mixed_operators() {
+        let ast = parse_query("ext:rs and (name:foo or name:bar) & not path:tests").unwrap();
+        let inner_or = AstNode::LogicalOp(
+            LogicalOperator::Or,
+            predicate(PredicateKey::Name, "foo"),
+            predicate(PredicateKey::Name, "bar"),
+        );
+        let and_with_or = AstNode::LogicalOp(
+            LogicalOperator::And,
+            predicate(PredicateKey::Ext, "rs"),
+            Box::new(inner_or),
+        );
+        let final_ast = AstNode::LogicalOp(
+            LogicalOperator::And,
+            Box::new(and_with_or),
+            Box::new(AstNode::Not(predicate(PredicateKey::Path, "tests"))),
+        );
+        assert_eq!(ast, final_ast);
     }
 }

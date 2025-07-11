@@ -548,3 +548,38 @@ fn test_path_predicate_deep_glob_cli() -> Result<(), Box<dyn std::error::Error>>
 
     Ok(())
 }
+
+#[test]
+fn test_cat_format_no_color_by_default() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, root) = setup_test_dir();
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(&root);
+    cmd.arg("search")
+        .arg("ext:rs")
+        .arg("--format")
+        .arg("cat");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("fn main()"))
+        .stdout(predicate::str::contains("\x1b[").not()); // Ensure no ANSI codes
+    Ok(())
+}
+
+#[test]
+fn test_cat_format_can_force_color() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, root) = setup_test_dir();
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(&root);
+    cmd.arg("search")
+        .arg("ext:rs")
+        .arg("--format")
+        .arg("cat")
+        .arg("--color=always");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("fn main()"))
+        .stdout(predicate::str::contains("\x1b[")); // Ensure ANSI codes ARE present
+    Ok(())
+}

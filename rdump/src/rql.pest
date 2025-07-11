@@ -31,9 +31,9 @@ single_quoted = @{ "'" ~ (("\\'" | !"'") ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ (("\\\"" | !"\"") ~ ANY)* ~ "\"" }
 
 // Define operators
-AND = { "&" }
-OR = { "|" }
-NOT = { "!" }
+AND = { "&" | "and" }
+OR = { "|" | "or" }
+NOT = { "!" | "not" }
 
 // Define whitespace, which we want to ignore between tokens
 WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
