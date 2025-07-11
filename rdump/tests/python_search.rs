@@ -89,3 +89,16 @@ fn test_call_predicate_python() {
         .stdout(predicate::str::contains("self.do_setup()"))
         .stdout(predicate::str::contains("run_helper()"));
 }
+
+#[test]
+fn test_def_not_found_python() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("def:NonExistent & ext:py")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}

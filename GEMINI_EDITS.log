@@ -1,6 +1,7 @@
-2025-07-11:
-- Modified `rdump/src/predicates/in_path.rs` to correctly handle relative paths with wildcards in the `in` predicate.
-- Modified `rdump/src/formatter.rs` to print plain text instead of markdown when the output is not a TTY.
-2025-07-11:
-- Fixed an ignored test in `rdump/tests/python_search.rs` and verified that the `call` predicate works for Python.
-- Added a new test to `rdump/tests/cli.rs` to ensure the `|` (or) operator works as expected.
+2025-07-12:
+- Added `contains_predicate.rs` to test the `contains` predicate.
+- Added "not found" tests to `rust_search.rs`, `go_search.rs`, `java_search.rs`, `js_ts_search.rs`, and `python_search.rs`.
+- Added a test for complex predicate combinations to `extended_cli.rs`.
+- Added `ignore.rs` to test the `.rdumpignore` functionality.
+- Fixed a bug in the `contains` predicate where it was case-sensitive.
+- Fixed a bug in the `test_size_predicate` test in `extended_cli.rs`.

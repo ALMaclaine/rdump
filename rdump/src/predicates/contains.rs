@@ -16,7 +16,7 @@ impl PredicateEvaluator for ContainsEvaluator {
         let content = context.get_content()?;
         let mut ranges = Vec::new();
         for (i, line) in content.lines().enumerate() {
-            if line.contains(value) {
+            if line.to_lowercase().contains(&value.to_lowercase()) {
                 let start_byte = content.lines().take(i).map(|l| l.len() + 1).sum();
                 let end_byte = start_byte + line.len();
                 let range = Range {

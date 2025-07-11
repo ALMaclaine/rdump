@@ -57,3 +57,16 @@ fn test_str_predicate_java() {
         .success()
         .stdout(predicate::str::contains("Application.java"));
 }
+
+#[test]
+fn test_class_not_found_java() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("class:NonExistent & ext:java")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}

@@ -20,6 +20,7 @@ struct Cli {
 }
 
 pub fn main() {
+    // This is the main function
     let _u = User::new();
     println!("Hello, world!");
 }

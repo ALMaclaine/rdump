@@ -251,3 +251,16 @@ fn test_and_of_semantic_predicates() {
         lines
     );
 }
+
+#[test]
+fn test_func_not_found() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("func:non_existent_function")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}

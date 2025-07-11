@@ -131,3 +131,16 @@ fn test_interface_and_type_predicates_typescript() {
         .success()
         .stdout(predicate::str::contains("log_utils.ts"));
 }
+
+#[test]
+fn test_def_not_found_js_ts() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("def:NonExistent & (ext:js | ext:ts)")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}

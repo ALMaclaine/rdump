@@ -1,5 +1,3 @@
-
-
 // In rdump/tests/extended_cli.rs
 
 use assert_cmd::prelude::*;
@@ -14,7 +12,7 @@ fn setup_query_test_dir() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempdir().unwrap();
     let root = dir.path().to_path_buf();
 
-    // A file that will match multiple criteria (38 bytes)
+    // A file that will match multiple criteria (44 bytes)
     fs::File::create(root.join("main.rs"))
         .unwrap()
         .write_all(b"// main file\nfn main() {\n    println!(\"hello\");\n}")
@@ -99,7 +97,7 @@ fn test_size_predicate() -> Result<(), Box<dyn std::error::Error>> {
 
     let output_gt = cmd_gt.output()?.stdout;
     let output_gt_str = String::from_utf8_lossy(&output_gt);
-    assert_eq!(output_gt_str.lines().count(), 2, "Expected 2 files greater than 40 bytes");
+    assert_eq!(output_gt_str.lines().count(), 2, "Expected 2 files greater than 40 bytes, found: {}", output_gt_str);
 
 
     // Test for files less than 40 bytes
@@ -109,8 +107,25 @@ fn test_size_predicate() -> Result<(), Box<dyn std::error::Error>> {
 
     let output_lt = cmd_lt.output()?.stdout;
     let output_lt_str = String::from_utf8_lossy(&output_lt);
-    assert_eq!(output_lt_str.lines().count(), 1, "Expected 1 file less than 40 bytes");
+    assert_eq!(output_lt_str.lines().count(), 1, "Expected 1 file less than 40 bytes, found: {}", output_lt_str);
 
     Ok(())
 }
 
+#[test]
+fn test_complex_predicate_combination() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, root) = setup_query_test_dir();
+
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(&root);
+    // Query: (name:main.rs or name:utils.rs) and contains:hello
+    cmd.arg("search")
+        .arg("(name:main.rs | name:utils.rs) & contains:hello");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("main.rs"))
+        .stdout(predicate::str::contains("utils.rs").not());
+
+    Ok(())
+}
