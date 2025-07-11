@@ -9,24 +9,23 @@ pub(super) fn parse_and_compare_size(file_size: u64, query: &str) -> Result<bool
         ("=", query)
     };
 
-    let target_size = size_str
-        .trim()
-        .to_lowercase()
-        .replace("kb", " * 1024")
-        .replace('k', " * 1024")
-        .replace("mb", " * 1024 * 1024")
-        .replace('m', " * 1024 * 1024")
-        .replace("gb", " * 1024 * 1024 * 1024")
-        .replace('g', " * 1024 * 1024 * 1024")
-        .replace('b', "");
+    let size_str = size_str.trim().to_lowercase();
+    let (num_str, unit) = size_str.split_at(
+        size_str
+            .find(|c: char| !c.is_digit(10) && c != '.')
+            .unwrap_or(size_str.len()),
+    );
 
-    // A simple expression evaluator for "N * N * N..."
-    let target_size_bytes = target_size
-        .split('*')
-        .map(|s| s.trim().parse::<f64>())
-        .collect::<Result<Vec<f64>, _>>()?
-        .into_iter()
-        .product::<f64>() as u64;
+    let num = num_str.parse::<f64>()?;
+    let multiplier = match unit.trim() {
+        "b" | "" => 1.0,
+        "kb" | "k" => 1024.0,
+        "mb" | "m" => 1024.0 * 1024.0,
+        "gb" | "g" => 1024.0 * 1024.0 * 1024.0,
+        _ => return Err(anyhow!("Invalid size unit: {}", unit)),
+    };
+
+    let target_size_bytes = (num * multiplier) as u64;
 
     match op {
         ">" => Ok(file_size > target_size_bytes),
