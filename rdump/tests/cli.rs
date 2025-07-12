@@ -476,3 +476,55 @@ fn test_search_with_or_operator() -> Result<(), Box<dyn std::error::Error>> {
         .stdout(predicate::str::contains("other.txt"));
     Ok(())
 }
+
+#[test]
+fn test_output_to_file_disables_color() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, root) = setup_test_dir();
+    let output_path = root.join("output.txt");
+
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(&root);
+    cmd.arg("search")
+        .arg("ext:rs")
+        .arg("--output")
+        .arg(&output_path);
+
+    // Even though the default is Auto, writing to a file should disable color.
+    cmd.assert().success();
+
+    let output_content = fs::read_to_string(&output_path)?;
+    assert!(
+        !output_content.contains("\x1b["),
+        "Output to file should not contain ANSI color codes by default"
+    );
+    assert!(
+        output_content.contains("fn main()"),
+        "Output file should contain the matched content"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_output_to_file_forced_color() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, root) = setup_test_dir();
+    let output_path = root.join("output_forced.txt");
+
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(&root);
+    cmd.arg("search")
+        .arg("ext:rs")
+        .arg("--output")
+        .arg(&output_path)
+        .arg("--color=always"); // Force color
+
+    cmd.assert().success();
+
+    let output_content = fs::read_to_string(&output_path)?;
+    assert!(
+        output_content.contains("\x1b["),
+        "Output to file with --color=always should contain ANSI color codes"
+    );
+
+    Ok(())
+}

@@ -1,1 +1,1 @@
-2025-07-11: Fixed a broken test `test_import_finds_use_statement` in `tests/rust_search.rs` by adding the `--format=markdown` flag. Removed unused imports in `src/evaluator.rs` and `tests/modified_predicate.rs`.
+2025-07-12: Fixed a regression where color codes were still present in the output file when using the --output flag. The logic was patched to disable colors when --output is used, unless --color=always is also specified. Added integration tests to verify this behavior and prevent future regressions.

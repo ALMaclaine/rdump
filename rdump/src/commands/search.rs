@@ -94,6 +94,11 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         ColorChoice::Auto => atty::is(Stream::Stdout),
     };
 
+    // If outputting to a file, disable color unless explicitly forced.
+    if args.output.is_some() && args.color != ColorChoice::Always {
+        use_color = false;
+    }
+
     // If the output format is `Cat` (likely for piping), we should not use color
     // unless the user has explicitly forced it with `Always`.
     if let crate::Format::Cat = args.format {
@@ -285,4 +290,5 @@ mod tests {
         assert!(files.contains(&expected_path.to_string_lossy().to_string()));
     }
 }
+
 
