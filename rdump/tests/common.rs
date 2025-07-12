@@ -12,6 +12,11 @@ pub fn setup_test_project() -> TempDir {
     fs::create_dir(&src_dir).unwrap();
 
     let main_rs_content = r#"
+#[macro_use]
+mod macros;
+mod lib;
+mod traits;
+
 // TODO: Refactor this later
 use crate::lib::{User, Role};
 
@@ -23,6 +28,7 @@ pub fn main() {
     // This is the main function
     let _u = User::new();
     println!("Hello, world!");
+    my_macro!();
 }
 "#;
     let mut main_rs = fs::File::create(src_dir.join("main.rs")).unwrap();
@@ -166,6 +172,38 @@ public class Application {
         .unwrap()
         .write_all(java_content.as_bytes())
         .unwrap();
+
+    let traits_rs_content = r#"
+pub trait Summary {
+    fn summarize(&self) -> String;
+}
+
+pub struct NewsArticle {
+    pub headline: String,
+    pub location: String,
+    pub author: String,
+    pub content: String,
+}
+
+impl Summary for NewsArticle {
+    fn summarize(&self) -> String {
+        format!("{}, by {} ({})", self.headline, self.author, self.location)
+    }
+}
+"#;
+    let mut traits_rs = fs::File::create(src_dir.join("traits.rs")).unwrap();
+    traits_rs.write_all(traits_rs_content.as_bytes()).unwrap();
+
+    let macros_rs_content = r#"
+#[macro_export]
+macro_rules! my_macro {
+    () => {
+        println!("This is my macro!");
+    };
+}
+"#;
+    let mut macros_rs = fs::File::create(src_dir.join("macros.rs")).unwrap();
+    macros_rs.write_all(macros_rs_content.as_bytes()).unwrap();
 
     dir
 }

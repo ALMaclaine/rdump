@@ -7,6 +7,7 @@ use rayon::prelude::*;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tempfile::NamedTempFile;
 use tree_sitter::Range;
 
@@ -61,19 +62,30 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let metadata_registry = predicates::create_metadata_predicate_registry();
     let pre_filter_evaluator = Evaluator::new(ast.clone(), metadata_registry);
 
+    let first_error = Mutex::new(None);
     let pre_filtered_files: Vec<PathBuf> = candidate_files
         .into_iter() // This pass is not parallel, it's fast enough.
         .filter(|path| {
+            if first_error.lock().unwrap().is_some() {
+                return false;
+            }
             let mut context = FileContext::new(path.clone(), args.root.clone());
             match pre_filter_evaluator.evaluate(&mut context) {
                 Ok(result) => result.is_match(),
                 Err(e) => {
-                    eprintln!("Error during pre-filter on {}: {}", path.display(), e);
+                    let mut error_guard = first_error.lock().unwrap();
+                    if error_guard.is_none() {
+                        *error_guard = Some(anyhow!("Error during pre-filter on {}: {}", path.display(), e));
+                    }
                     false
                 }
             }
         })
         .collect();
+
+    if let Some(e) = first_error.into_inner().unwrap() {
+        return Err(e);
+    }
 
     // --- Determine if color should be used ---
     let mut use_color = match args.color {
@@ -95,9 +107,13 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let full_registry = predicates::create_predicate_registry();
     let evaluator = Evaluator::new(ast, full_registry);
 
+    let first_error = Mutex::new(None);
     let mut matching_files: Vec<(PathBuf, Vec<Range>)> = pre_filtered_files
         .par_iter()
         .filter_map(|path| {
+            if first_error.lock().unwrap().is_some() {
+                return None;
+            }
             let mut context = FileContext::new(path.clone(), args.root.clone());
             match evaluator.evaluate(&mut context) {
                 Ok(MatchResult::Boolean(true)) => Some((path.clone(), Vec::new())),
@@ -110,12 +126,19 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error evaluating file {}: {}", path.display(), e);
+                    let mut error_guard = first_error.lock().unwrap();
+                    if error_guard.is_none() {
+                        *error_guard = Some(anyhow!("Error evaluating file {}: {}", path.display(), e));
+                    }
                     None
                 }
             }
         })
         .collect();
+
+    if let Some(e) = first_error.into_inner().unwrap() {
+        return Err(e);
+    }
 
     matching_files.sort_by(|a, b| a.0.cmp(&b.0));
 

@@ -245,8 +245,8 @@ fn test_and_of_semantic_predicates() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert_eq!(
         lines.len(),
-        2,
-        "Expected exactly 2 files, but found {}: {:?}",
+        3,
+        "Expected exactly 3 files, but found {}: {:?}",
         lines.len(),
         lines
     );
