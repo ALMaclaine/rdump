@@ -1,39 +1,66 @@
-// This defines the overall structure of a query
+// rdump Query Language (RQL) Grammar
+// This file defines the syntax for rdump queries using the Pest parser generator.
+// The grammar is defined in a top-down manner, from the highest-level rule (query)
+// to the lowest-level tokens (operators, identifiers, etc.).
+
+// --- Top-Level Rule ---
+// A query must start at the beginning of the input (SOI), contain a single
+// expression, and end at the end of the input (EOI). This ensures the entire
+// input string is parsed.
 query = { SOI ~ expression ~ EOI }
 
-// An expression is one or more terms joined by operators
+// --- Expression and Operator Precedence ---
+// An expression is a series of terms connected by logical operators.
+// The grammar enforces standard logical precedence: NOT > AND > OR.
 expression = { logical_or }
 
-// Define operator precedence: OR is lowest
+// `logical_or` has the lowest precedence. It's a series of `logical_and`
+// terms separated by the OR operator.
 logical_or = { logical_and ~ (OR ~ logical_and)* }
+
+// `logical_and` has higher precedence than OR. It's a series of `term`s
+// separated by the AND operator.
 logical_and = { term ~ (AND ~ term)* }
 
-// A term can be a negated factor, a grouped expression, or a simple predicate
+// --- Terms and Factors ---
+// A `term` is the basic building block of an expression. It can be a simple
+// factor or a factor negated with NOT. The NOT operator has the highest precedence.
 term = { NOT? ~ factor }
+
+// A `factor` can be a single predicate or a grouped expression in parentheses.
+// Parentheses are used to override the default operator precedence.
 factor = { predicate | "(" ~ expression ~ ")" }
 
-// A predicate is our key:value pair
+// --- Predicates and Values ---
+// A `predicate` is the core of the query, representing a key-value filter.
+// It consists of an identifier (the key), a colon, and a value.
 predicate = { identifier ~ ":" ~ value }
 
-// Define the components
+// An `identifier` is the key for a predicate (e.g., "ext", "name", "contains").
+// It must consist of one or more alphanumeric characters.
 identifier = @{ ASCII_ALPHANUMERIC+ }
 
-// --- CORRECTED VALUE RULES ---
+// A `value` can be either quoted or unquoted.
 value = { quoted_value | unquoted_value }
 
-// An unquoted value is a sequence of characters that are not special operators or whitespace.
-// It can include comparison operators and time/size units.
+// An `unquoted_value` is a sequence of characters that are not special operators
+// or whitespace. This allows for simple values without requiring quotes.
+// It can include comparison operators and time/size units (e.g., ">10kb").
 unquoted_value = @{ (!(" " | "\t" | "\n" | "\r" | "(" | ")") ~ ANY)+ }
 
-// A quoted value captures everything between the quotes
+// A `quoted_value` allows for values containing spaces or special characters.
+// It supports both single and double quotes, and allows escaping the respective
+// quote character with a backslash.
 quoted_value = { single_quoted | double_quoted }
 single_quoted = @{ "'" ~ (("\\'" | !"'") ~ ANY)* ~ "'" }
 double_quoted = @{ "\"" ~ (("\\\"" | !"\"") ~ ANY)* ~ "\"" }
 
-// Define operators
+// --- Operators and Whitespace ---
+// Logical operators can be symbols or case-insensitive keywords.
 AND = { "&" | ("a" | "A") ~ ("n" | "N") ~ ("d" | "D") }
 OR = { "|" | ("o" | "O") ~ ("r" | "R") }
 NOT = { "!" | ("n" | "N") ~ ("o" | "O") ~ ("t" | "T") }
 
-// Define whitespace, which we want to ignore between tokens
+// `WHITESPACE` is defined to be ignored between other tokens, making the
+// query format more flexible.
 WHITESPACE = _{ " " | "\t" | "\n" | "\r" }

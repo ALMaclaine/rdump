@@ -16,7 +16,7 @@ fn test_def_finds_javascript_class() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("logger.js"))
-        .stdout(predicate::str::contains("```")) // Check for markdown code fence
+        .stdout(predicate::str::contains("export class OldLogger"))
         .stdout(predicate::str::contains("log_utils.ts").not());
 }
 

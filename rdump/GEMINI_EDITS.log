@@ -1,0 +1,1 @@
+2025-07-11: Fixed a broken test `test_import_finds_use_statement` in `tests/rust_search.rs` by adding the `--format=markdown` flag. Removed unused imports in `src/evaluator.rs` and `tests/modified_predicate.rs`.

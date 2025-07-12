@@ -396,4 +396,13 @@ mod tests {
         );
         assert_eq!(ast, final_ast);
     }
+
+    #[test]
+    fn test_parse_unknown_predicate() {
+        let ast = parse_query("unknown:predicate").unwrap();
+        assert_eq!(
+            ast,
+            *predicate(PredicateKey::Other("unknown".to_string()), "predicate")
+        );
+    }
 }

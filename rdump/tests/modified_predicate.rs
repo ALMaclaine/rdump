@@ -1,7 +1,7 @@
 
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
-use std::fs::{self, File};
+use std::fs::File;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;

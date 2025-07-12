@@ -34,7 +34,7 @@ globset = "0.4.10"
 [dev-dependencies]
 assert_cmd = "2.0.14"
 predicates = "3.1.0"
-tempfile = "3.10.1"
+tree-sitter-rust = "0.21.0"
 
 [[test]]
 name = "rust_search_traits"

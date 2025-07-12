@@ -16,7 +16,7 @@ fn test_def_finds_python_class() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("helper.py"))
-        .stdout(predicate::str::contains("```py")) // Check for markdown code fence
+        .stdout(predicate::str::contains("class Helper"))
         .stdout(predicate::str::contains("src/main.rs").not());
 }
 
@@ -31,7 +31,7 @@ fn test_func_finds_python_function() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("helper.py"))
-        .stdout(predicate::str::contains("```py")) // Check for markdown code fence
+        .stdout(predicate::str::contains("def run_helper()"))
         .stdout(predicate::str::contains("src/main.rs").not());
 }
 

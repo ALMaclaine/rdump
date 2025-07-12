@@ -148,41 +148,55 @@ impl MatchResult {
     /// Combines two match results based on a logical operator.
     pub fn combine_with(self, other: MatchResult, op: &LogicalOperator) -> Self {
         match op {
-            LogicalOperator::And => {
-                if !self.is_match() || !other.is_match() {
-                    return MatchResult::Boolean(false);
-                }
-                match (self, other) {
-                    (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                        a.extend(b);
-                        a.sort_by_key(|r| r.start_byte);
-                        a.dedup();
-                        MatchResult::Hunks(a)
-                    }
-                    (h @ MatchResult::Hunks(_), MatchResult::Boolean(true)) => h,
-                    (MatchResult::Boolean(true), h @ MatchResult::Hunks(_)) => h,
-                    (MatchResult::Boolean(true), MatchResult::Boolean(true)) => {
-                        MatchResult::Boolean(true)
-                    }
-                    _ => MatchResult::Boolean(false),
-                }
+            LogicalOperator::And => self.combine_and(other),
+            LogicalOperator::Or => self.combine_or(other),
+        }
+    }
+
+    // Helper for AND logic
+    fn combine_and(self, other: MatchResult) -> Self {
+        if !self.is_match() || !other.is_match() {
+            return MatchResult::Boolean(false);
+        }
+        match (self, other) {
+            // Both are hunks: combine them, sort, and deduplicate.
+            (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                a.extend(b);
+                a.sort_by_key(|r| r.start_byte);
+                a.dedup();
+                MatchResult::Hunks(a)
             }
-            LogicalOperator::Or => match (self, other) {
-                (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => {
-                    MatchResult::Boolean(true)
-                }
-                (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
-                    a.extend(b);
-                    a.sort_by_key(|r| r.start_byte);
-                    a.dedup();
-                    MatchResult::Hunks(a)
-                }
-                (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
-                (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
-                (MatchResult::Boolean(false), MatchResult::Boolean(false)) => {
-                    MatchResult::Boolean(false)
-                }
-            },
+            // One is a hunk, the other is a full-file match (true). Keep the hunks.
+            (h @ MatchResult::Hunks(_), MatchResult::Boolean(true)) => h,
+            (MatchResult::Boolean(true), h @ MatchResult::Hunks(_)) => h,
+            // Both are full-file matches.
+            (MatchResult::Boolean(true), MatchResult::Boolean(true)) => MatchResult::Boolean(true),
+            // Should be unreachable due to the initial `is_match` check.
+            _ => MatchResult::Boolean(false),
+        }
+    }
+
+    // Helper for OR logic
+    fn combine_or(self, other: MatchResult) -> Self {
+        match (self, other) {
+            // If either is a full-file match, the result is a full-file match.
+            (MatchResult::Boolean(true), _) | (_, MatchResult::Boolean(true)) => {
+                MatchResult::Boolean(true)
+            }
+            // Both are hunks: combine them, sort, and deduplicate.
+            (MatchResult::Hunks(mut a), MatchResult::Hunks(b)) => {
+                a.extend(b);
+                a.sort_by_key(|r| r.start_byte);
+                a.dedup();
+                MatchResult::Hunks(a)
+            }
+            // One is a hunk, the other is a non-match. Keep the hunks.
+            (h @ MatchResult::Hunks(_), MatchResult::Boolean(false)) => h,
+            (MatchResult::Boolean(false), h @ MatchResult::Hunks(_)) => h,
+            // Both are non-matches.
+            (MatchResult::Boolean(false), MatchResult::Boolean(false)) => {
+                MatchResult::Boolean(false)
+            }
         }
     }
 }
@@ -191,7 +205,10 @@ impl MatchResult {
 mod tests {
     use super::*;
     use crate::parser::LogicalOperator;
+    use std::fs;
+    use tempfile::tempdir;
     use tree_sitter::Point;
+    use tree_sitter_rust::language;
 
     #[test]
     fn test_combine_with_hunks_and() {
@@ -245,5 +262,43 @@ mod tests {
         } else {
             panic!("Expected Hunks result");
         }
+    }
+
+    #[test]
+    fn test_file_context_content_caching() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, "hello").unwrap();
+
+        let mut context = FileContext::new(file_path.clone(), dir.path().to_path_buf());
+
+        // First access should read from file
+        assert_eq!(context.get_content().unwrap(), "hello");
+        assert!(context.content.is_some());
+
+        // Modify the file content
+        fs::write(&file_path, "world").unwrap();
+
+        // Second access should return cached content
+        assert_eq!(context.get_content().unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_file_context_tree_caching() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.rs");
+        fs::write(&file_path, "fn main() {}").unwrap();
+
+        let mut context = FileContext::new(file_path, dir.path().to_path_buf());
+        let language = language();
+
+        // First access should parse and cache the tree
+        let tree1_sexp = context.get_tree(language.clone()).unwrap().root_node().to_sexp();
+        assert!(context.tree.is_some());
+
+        // Second access should return the cached tree
+        let tree2_sexp = context.get_tree(language).unwrap().root_node().to_sexp();
+
+        assert_eq!(tree1_sexp, tree2_sexp);
     }
 }

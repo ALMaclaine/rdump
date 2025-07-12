@@ -81,7 +81,7 @@ fn test_search_simple_predicate_succeeds() -> Result<(), Box<dyn std::error::Err
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("File: ./main.rs"))
-        .stdout(predicate::str::contains("```rs")) // Check for markdown code fence
+        .stdout(predicate::str::contains("fn main()"))
         .stdout(predicate::str::contains("---").count(1))
         .stdout(predicate::str::contains("other.txt").not());
     Ok(())

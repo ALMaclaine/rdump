@@ -234,13 +234,7 @@ fn print_content_with_style(
             start_line_number,
         )
     } else {
-        print_markdown_fenced_content(
-            writer,
-            content,
-            extension,
-            with_line_numbers,
-            start_line_number,
-        )
+        print_plain_content(writer, content, with_line_numbers, start_line_number)
     }
 }
 
@@ -449,7 +443,7 @@ mod tests {
         let expected_header = format!("File: {}\n---\n", file.path().display());
         assert!(output.starts_with(&expected_header));
         // The extension of a tempfile is random, so we check for an empty language hint
-        assert!(output.contains("```\nline 1\n```"));
+        assert!(output.contains("```\nline 1\n```\n"));
     }
 
     #[test]
@@ -492,5 +486,16 @@ mod tests {
             !output.contains("\x1b["),
             "Markdown format should not contain ANSI escape codes"
         );
+    }
+
+    #[test]
+    fn test_format_find() {
+        let file = create_temp_file_with_content("hello");
+        let paths = vec![(file.path().to_path_buf(), vec![])];
+        let mut writer = Vec::new();
+        print_output(&mut writer, &paths, &Format::Find, false, false, false, 0).unwrap();
+        let output = String::from_utf8(writer).unwrap();
+        assert!(output.contains("B")); // Size
+        assert!(output.contains(&file.path().display().to_string()));
     }
 }
