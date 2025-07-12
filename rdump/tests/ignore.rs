@@ -1,11 +1,11 @@
 
 // In rdump/tests/ignore.rs
 
-use assert_cmd::prelude::*;
+use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command as StdCommand, Stdio};
 use tempfile::tempdir;
 
 #[test]
@@ -56,10 +56,17 @@ fn test_rdumpignore_excludes_matching_pattern() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-#[ignore = "Failing due to precedence issues with .gitignore and .rdumpignore"]
 fn test_rdumpignore_unignore_overrides_gitignore() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempdir()?;
     let root = dir.path();
+
+    // Initialize a git repository so .gitignore is respected
+    StdCommand::new("git")
+        .arg("init")
+        .current_dir(root)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
 
     fs::File::create(root.join("main.log"))?.write_all(b"main log")?;
     fs::File::create(root.join("debug.log"))?.write_all(b"debug log")?;
@@ -80,7 +87,6 @@ fn test_rdumpignore_unignore_overrides_gitignore() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-#[ignore = "Failing due to precedence issues with default ignores and .rdumpignore"]
 fn test_rdumpignore_unignore_overrides_default_ignores() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempdir()?;
     let root = dir.path();

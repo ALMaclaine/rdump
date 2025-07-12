@@ -216,9 +216,9 @@ fn get_candidate_files(
         // Layer 3: A user's custom project-local .rdumpignore file.
         walker_builder.add_custom_ignore_filename(".rdumpignore");
 
-        // Layer 4: Standard .gitignore files.
-        walker_builder.git_global(true);
-        walker_builder.git_ignore(true);
+        // Layer 4: Standard .gitignore files are enabled by default.
+        // walker_builder.git_global(true);
+        // walker_builder.git_ignore(true);
     }
 
     for result in walker_builder.build() {

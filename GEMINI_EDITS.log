@@ -5,3 +5,12 @@ Change: Implemented test cases for ignore file logic from missing-test-cases.txt
 - Added `test_rdumpignore_unignore_overrides_gitignore` (ignored).
 - Added `test_rdumpignore_unignore_overrides_default_ignores` (ignored).
 - The two tests related to un-ignoring were marked as ignored due to unresolved precedence issues between `.rdumpignore`, `.gitignore`, and the tool's default ignores. This is a known issue to be resolved later.
+
+- **Date:** 2025-07-12
+- **Description:** Implemented and fixed the 'Ignore File Logic' test cases from 'missing-test-cases.txt'.
+- **Changes:**
+  - Removed 'ignore' attribute from 'test_rdumpignore_unignore_overrides_gitignore' and 'test_rdumpignore_unignore_overrides_default_ignores' in 'rdump/tests/ignore.rs'.
+  - Fixed the tests by ensuring a 'git' repository is initialized in the test's temporary directory, which allows '.gitignore' files to be processed correctly by the 'ignore' crate.
+  - This ensures that '.rdumpignore' files can correctly override '.gitignore' rules.
+  - Cleaned up 'use' statements in 'rdump/tests/ignore.rs'.
+
