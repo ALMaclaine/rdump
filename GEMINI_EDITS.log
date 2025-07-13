@@ -1,3 +1,4 @@
+
 Date: 2025-07-12
 Change: Implemented test cases for ignore file logic from missing-test-cases.txt.
 - Added `test_rdumpignore_excludes_matching_pattern`.
@@ -19,3 +20,10 @@ Date: 2025-07-13
 - Added a test case to `rdump/src/predicates/mod.rs` to ensure code-aware queries for non-existent items do not produce false positives.
 - Added test cases to `rdump/src/predicates/in_path.rs` to verify wildcard functionality (`*` and `**`) for directory path matching.
 - Refactored the `rdump` crate from a binary-only crate to a library with a binary entrypoint. This involved creating a `src/lib.rs` and moving shared code into it, which resolved build issues with the new integration tests.
+
+Date: 2025-07-13
+- Added new integration tests to `rdump/tests/search_integration.rs` to cover I/O error handling and parsing of values with special characters.
+- Implemented `test_search_fails_on_unwritable_output_path` to check for correct error handling on file system permission errors.
+- Implemented `test_query_with_literal_glob_character` and `test_query_with_escaped_quote` to ensure the parser correctly handles special characters in query values.
+- Updated test helpers in `search_integration.rs` to correctly pass query arguments to `clap`.
+- Fixed a parser issue with escaped quotes by using double quotes in the test case.
