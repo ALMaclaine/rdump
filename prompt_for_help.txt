@@ -1,0 +1,93 @@
+I am working on a Rust command-line tool called `rdump` and am stuck on a failing test case.
+
+**The Goal:**
+The task is to implement a bug fix and add several new tests provided in a diff. The bug fix involves changing the `path` predicate to use the `globset` crate for more accurate glob matching.
+
+**The Problem:**
+One of the new tests, `test_path_glob_respects_directory_boundaries` in `rdump/tests/path_predicate.rs`, consistently fails. The test's expectation is fundamentally at odds with the behavior of the underlying `globset` library.
+
+A glob like `*.rs` is intended to match only files in the immediate directory. However, `globset` matches this pattern against the filename component of *any* path, causing it to incorrectly match files in subdirectories (e.g., `sub/deep_file.rs`).
+
+---
+
+### Code Examples
+
+**1. The `path` Predicate Implementation:**
+This is the code that evaluates the `path` predicate. It uses `globset::Glob` to perform the match.
+
+*File: `rdump/src/predicates/path.rs`*
+```rust
+use super::PredicateEvaluator;
+use crate::evaluator::{FileContext, MatchResult};
+use crate::parser::PredicateKey;
+use anyhow::Result;
+use globset::Glob;
+
+pub(super) struct PathEvaluator;
+
+impl PredicateEvaluator for PathEvaluator {
+    fn evaluate(
+        &self,
+        context: &mut FileContext,
+        _key: &PredicateKey,
+        value: &str,
+    ) -> Result<MatchResult> {
+        let path_str = context.path.to_string_lossy();
+
+        if value.contains('*') || value.contains('?') || value.contains('[') || value.contains('{')
+        {
+            let glob = Glob::new(value)?.compile_matcher();
+            Ok(MatchResult::Boolean(glob.is_match(path_str.as_ref())))
+        } else {
+            // Fallback to simple substring search for non-glob patterns
+            Ok(MatchResult::Boolean(path_str.contains(value)))
+        }
+    }
+}
+```
+
+**2. The Failing Test Case:**
+This test creates two files and asserts that the glob `path:*.rs` should only match the file in the root directory. The assertion `.stdout(predicate::str::contains("deep_file.rs").not())` is what fails.
+
+*File: `rdump/tests/path_predicate.rs`*
+```rust
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::fs;
+use std::process::Command;
+use tempfile::tempdir;
+
+#[test]
+fn test_path_glob_respects_directory_boundaries() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let sub_dir = root.join("sub");
+    fs::create_dir(&sub_dir).unwrap();
+    fs::File::create(sub_dir.join("deep_file.rs")).unwrap();
+    fs::File::create(root.join("root_file.rs")).unwrap();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(root);
+    // This glob should ONLY match root_file.rs, not sub/deep_file.rs
+    cmd.arg("search")
+        .arg("--format=paths")
+        .arg("path:*.rs");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("root_file.rs"))
+        .stdout(predicate::str::contains("deep_file.rs").not()); // <-- THIS FAILS
+}
+```
+
+---
+
+### What I've Tried
+
+1.  **Modifying the glob:** Changing the query to `path:./*.rs` did not solve the issue.
+2.  **Using `in_path` predicate:** Queries like `in_path:. & ext:rs` or `in_path:"." & ext:rs` cause a query parsing error ("expected term").
+
+### The Core Question
+
+How can I modify the test `test_path_glob_respects_directory_boundaries` to correctly verify that only files in the immediate directory are matched? Is there a different glob pattern or a different query structure that would achieve the test's original intent while being compatible with `globset` and the `rdump` query parser?

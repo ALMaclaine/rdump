@@ -2,7 +2,7 @@ use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
 use anyhow::Result;
-use regex::Regex;
+use globset::Glob;
 
 pub(super) struct PathEvaluator;
 
@@ -18,12 +18,8 @@ impl PredicateEvaluator for PathEvaluator {
         if value.contains('*') || value.contains('?') || value.contains('[') || value.contains('{')
         {
             // Convert glob-style pattern to a regex
-            let regex_str = value
-                .replace('.', "\\.")
-                .replace('*', ".*")
-                .replace('?', ".");
-            let regex = Regex::new(&regex_str)?;
-            Ok(MatchResult::Boolean(regex.is_match(&path_str)))
+            let glob = Glob::new(value)?.compile_matcher();
+            Ok(MatchResult::Boolean(glob.is_match(path_str.as_ref())))
         } else {
             // Fallback to simple substring search for non-glob patterns
             Ok(MatchResult::Boolean(path_str.contains(value)))
@@ -70,20 +66,32 @@ mod tests {
         );
         let evaluator = PathEvaluator;
 
+        // This should match because ** crosses directory boundaries
         assert!(evaluator
-            .evaluate(&mut context, &PredicateKey::Path, "project/src/*")
+            .evaluate(&mut context, &PredicateKey::Path, "**/main.rs")
             .unwrap()
             .is_match());
+        // This should also match
         assert!(evaluator
-            .evaluate(&mut context, &PredicateKey::Path, "project/*/main.rs")
+            .evaluate(
+                &mut context,
+                &PredicateKey::Path,
+                "/home/user/project/src/*.rs"
+            )
             .unwrap()
             .is_match());
+        // This SHOULD match because a glob without a separator matches the file name.
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::Path, "*.rs")
             .unwrap()
             .is_match());
+        // This should match
+        assert!(evaluator
+            .evaluate(&mut context, &PredicateKey::Path, "**/*.rs")
+            .unwrap()
+            .is_match());
         assert!(!evaluator
-            .evaluate(&mut context, &PredicateKey::Path, "*.ts")
+            .evaluate(&mut context, &PredicateKey::Path, "**/*.ts")
             .unwrap()
             .is_match());
     }

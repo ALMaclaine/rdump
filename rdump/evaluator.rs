@@ -20,15 +20,17 @@ pub enum MatchResult {
 /// It lazily loads content and caches the tree-sitter AST.
 pub struct FileContext {
     pub path: PathBuf,
+    pub root: PathBuf,
     content: Option<String>,
     // Cache for the parsed tree-sitter AST
     tree: Option<Tree>,
 }
 
 impl FileContext {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, root: PathBuf) -> Self {
         FileContext {
             path,
+            root,
             content: None,
             tree: None,
         }
@@ -198,7 +200,7 @@ mod tests {
     #[test]
     fn test_evaluate_logical_and() {
         let file = create_temp_file("hello world");
-        let mut context = FileContext::new(file.path().to_path_buf());
+        let mut context = FileContext::new(file.path().to_path_buf(), PathBuf::from("/"));
         let ast = parse_query("contains:hello & contains:world").unwrap();
         let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());

@@ -29,7 +29,7 @@ impl PredicateEvaluator for InPathEvaluator {
                 Ok(MatchResult::Boolean(false))
             }
         } else {
-            // --- Existing Exact-Path Logic (for non-wildcard patterns) ---
+            // --- Non-recursive Exact-Path Logic ---
             let target_dir = PathBuf::from(value);
             let absolute_target_dir = if target_dir.is_absolute() {
                 target_dir
@@ -37,28 +37,24 @@ impl PredicateEvaluator for InPathEvaluator {
                 context.root.join(target_dir)
             };
 
-            // If the target directory doesn't exist, it can't contain any files.
-            if !absolute_target_dir.exists() {
+            if !absolute_target_dir.is_dir() {
                 return Ok(MatchResult::Boolean(false));
             }
 
-            // Canonicalize to resolve `.` or `..` for a reliable comparison.
-            // On failure (e.g., broken symlink), we consider it a non-match rather than erroring out.
             let canonical_target = match dunce::canonicalize(&absolute_target_dir) {
                 Ok(path) => path,
                 Err(_) => return Ok(MatchResult::Boolean(false)),
             };
-            let canonical_file_path = match dunce::canonicalize(&context.path) {
-                Ok(path) => path,
-                // This should not fail for a file that is being processed, but be robust.
-                Err(_) => return Ok(MatchResult::Boolean(false)),
-            };
 
-            // `starts_with` handles the "is contained within" logic perfectly for exact paths.
-            // e.g., a file in `/a/b/c` is also considered "in" `/a/b`.
-            Ok(MatchResult::Boolean(
-                canonical_file_path.starts_with(&canonical_target),
-            ))
+            if let Some(file_parent) = context.path.parent() {
+                let canonical_file_parent = match dunce::canonicalize(file_parent) {
+                    Ok(path) => path,
+                    Err(_) => return Ok(MatchResult::Boolean(false)),
+                };
+                Ok(MatchResult::Boolean(canonical_file_parent == canonical_target))
+            } else {
+                Ok(MatchResult::Boolean(false))
+            }
         }
     }
 }
@@ -90,13 +86,13 @@ mod tests {
 
         let mut context = FileContext::new(main_rs_path.clone(), root_path.to_path_buf());
 
-        // 1. Absolute Path: Exact parent directory
+        // 1. Absolute Path: Exact parent directory. Should match.
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::In, src_dir.to_str().unwrap())?
             .is_match());
 
-        // 2. Absolute Path: Grandparent directory
-        assert!(evaluator
+        // 2. Absolute Path: Grandparent directory. Should NOT match due to non-recursive logic.
+        assert!(!evaluator
             .evaluate(
                 &mut context,
                 &PredicateKey::In,
@@ -104,7 +100,7 @@ mod tests {
             )?
             .is_match());
 
-        // 3. Absolute Path: Non-matching directory
+        // 3. Absolute Path: Non-matching directory.
         assert!(!evaluator
             .evaluate(
                 &mut context,
@@ -113,23 +109,23 @@ mod tests {
             )?
             .is_match());
 
-        // 4. Relative Path: from the root
+        // 4. Relative Path: from the root. Should match.
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::In, "project/src")?
             .is_match());
 
-        // 5. Relative Path: with dot-slash
+        // 5. Relative Path: with dot-slash. Should match.
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::In, "./project/src")?
             .is_match());
 
-        // 6. Relative Path: non-matching
+        // 6. Relative Path: non-matching.
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::In, "other_project")?
             .is_match());
 
-        // 7. A file is considered to be "in" the directory represented by its own path
-        assert!(evaluator
+        // 7. A file path is not a directory. Should not match.
+        assert!(!evaluator
             .evaluate(
                 &mut context,
                 &PredicateKey::In,
@@ -137,7 +133,7 @@ mod tests {
             )?
             .is_match());
 
-        // 8. Non-existent directory should not error, just return false
+        // 8. Non-existent directory should not error, just return false.
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::In, "non_existent_dir")?
             .is_match());

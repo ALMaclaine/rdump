@@ -114,6 +114,23 @@ fn test_search_invalid_query_fails() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[test]
+fn test_lang_describe_command() -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.arg("lang").arg("describe").arg("rust");
+
+    // Assert that the output contains the key sections for a supported language.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Predicates for Rust"))
+        .stdout(predicate::str::contains("METADATA"))
+        .stdout(predicate::str::contains("ext, name, path"))
+        .stdout(predicate::str::contains("CONTENT"))
+        .stdout(predicate::str::contains("contains, matches"))
+        .stdout(predicate::str::contains("SEMANTIC"));
+    Ok(())
+}
+
 // Add this new helper function to rdump/tests/cli.rs
 
 /// Sets up a more complex directory for testing discovery and formatting.

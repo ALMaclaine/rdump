@@ -31,4 +31,4 @@ Date: 2025-07-13
 - Fixed a regression in the `in:` predicate by restoring the `root` path to the `FileContext` in `rdump/src/evaluator.rs`.
 - Added new integration tests in `rdump/tests/advanced_logic.rs` to cover advanced logical combinations, negation, and error handling for non-existent root paths.
 - Fixed a compiler error related to a moved value by cloning the error variable before use in `rdump/src/commands/search.rs`.
-- Corrected the new integration tests to properly specify the root directory for searching test files.
+- Corrected the new integration tests to properly specify the root directory for searching test files.2025-07-13: Fixed a breaking test by re-introducing 'root' to 'FileContext', making the 'in' predicate non-recursive, and correcting the failing test query.

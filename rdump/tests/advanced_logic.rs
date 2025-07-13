@@ -84,3 +84,30 @@ fn test_behavior_on_unknown_predicate() {
         .stdout(predicate::str::contains("code.rs"))
         .stdout(predicate::str::contains("calls.rs"));
 }
+
+#[test]
+fn test_negation_of_hunk_predicate_produces_boolean_match() {
+    // Case 1: Negating a predicate that DOES match the file.
+    // The file code.rs contains `struct MyStruct`.
+    // `!struct:MyStruct` should evaluate to false for this file.
+    let mut cmd1 = Command::cargo_bin("rdump").unwrap();
+    cmd1.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("!struct:MyStruct & name:code.rs");
+
+    cmd1.assert().success().stdout(predicate::str::is_empty());
+
+    // Case 2: Negating a predicate that does NOT match the file.
+    // The file code.rs does NOT contain `struct NonExistent`.
+    // `!struct:NonExistent` should evaluate to true for this file.
+    let mut cmd2 = Command::cargo_bin("rdump").unwrap();
+    cmd2.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("!struct:NonExistent & name:code.rs");
+
+    cmd2.assert()
+        .success()
+        .stdout(predicate::str::contains("File: ../insane_test_bed/code.rs"));
+}
