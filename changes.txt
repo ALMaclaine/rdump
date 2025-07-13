@@ -1,86 +1,391 @@
-Excellent! This is a great feature to add, making the `in` predicate much more versatile. Here is the implementation to add wildcard support, primarily by modifying `rdump/src/predicates/in_path.rs` and its associated tests.
+Of course. I will implement a representative selection of the missing test cases you've outlined. The focus will be on improving correctness and testing core functionality like predicate logic and complex queries.
 
-### 1. Add Dependency
+Here are the changes, implemented across several files.
 
-First, you need to add the `globset` crate to your project's dependencies in `Cargo.toml`. This crate provides a fast and correct glob-matching implementation.
+### 1. Refactoring `search.rs` for Testability
 
-```toml
-# In your [dependencies] section of Cargo.toml
-globset = "0.4.10"
-```
+To test complex queries, the core search logic needs to be separated from the output formatting. I'll refactor `run_search` into two functions: a new public `perform_search` that returns the results, and the existing `run_search` which will now call `perform_search` and handle printing.
 
-### 2. Updated `rdump/src/predicates/in_path.rs`
-
-The main change is to bifurcate the logic in the `evaluate` function. If the input `value` contains glob metacharacters, we use `globset` to match against the file's parent directory. Otherwise, we retain the existing, efficient `starts_with` logic for exact paths. This provides the new functionality without breaking the old behavior.
-
+File: `rdump/src/commands/search.rs`
 ```rust
+use crate::{config, ColorChoice, SearchArgs};
+use anyhow::anyhow;
 use anyhow::Result;
-use globset::Glob;
+use atty::Stream;
+use ignore::WalkBuilder;
+use rayon::prelude::*;
+use std::fs::File;
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use tempfile::NamedTempFile;
+use tree_sitter::Range;
 
-use super::PredicateEvaluator;
-use crate::evaluator::{FileContext, MatchResult};
-use crate::parser::PredicateKey;
+use crate::evaluator::{Evaluator, FileContext, MatchResult};
+use crate::formatter;
+use crate::parser;
+use crate::predicates;
 
-pub(super) struct InPathEvaluator;
+/// The main entry point for the `search` command.
+pub fn run_search(mut args: SearchArgs) -> Result<()> {
+    // --- Handle Shorthand Flags ---
+    if args.no_headers {
+        args.format = crate::Format::Cat;
+    }
+    if args.find {
+        args.format = crate::Format::Find;
+    }
 
-impl PredicateEvaluator for InPathEvaluator {
-    fn evaluate(
-        &self,
-        context: &mut FileContext,
-        _key: &PredicateKey,
-        value: &str,
-    ) -> Result<MatchResult> {
-        // Check for glob metacharacters to switch between logic paths.
-        if value.contains('*') || value.contains('?') || value.contains('[') || value.contains('{')
-        {
-            // --- Wildcard Logic ---
-            let glob = Glob::new(value)?.compile_matcher();
+    // --- Perform the actual search ---
+    let matching_files = perform_search(&args)?;
 
-            // We match the glob pattern against the file's parent directory.
-            // If there's no parent (e.g., file is at the root "/"), it's not "in" a directory.
-            if let Some(parent) = context.path.parent() {
-                // The glob is matched against the entire parent path.
-                // For example, a glob "**/src" will match a parent path like "/home/user/project/src".
-                // A glob "/home/user/project_*/src" will also work as expected.
-                Ok(MatchResult::Boolean(glob.is_match(parent)))
-            } else {
-                Ok(MatchResult::Boolean(false))
-            }
-        } else {
-            // --- Existing Exact-Path Logic (for non-wildcard patterns) ---
-            let target_dir = PathBuf::from(value);
-            let absolute_target_dir = if target_dir.is_absolute() {
-                target_dir
-            } else {
-                context.root.join(target_dir)
-            };
+    // --- Determine if color should be used ---
+    let mut use_color = match args.color {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => atty::is(Stream::Stdout),
+    };
 
-            // If the target directory doesn't exist, it can't contain any files.
-            if !absolute_target_dir.exists() {
-                return Ok(MatchResult::Boolean(false));
-            }
+    // If outputting to a file, disable color unless explicitly forced.
+    if args.output.is_some() && args.color != ColorChoice::Always {
+        use_color = false;
+    }
 
-            // Canonicalize to resolve `.` or `..` for a reliable comparison.
-            // On failure (e.g., broken symlink), we consider it a non-match rather than erroring out.
-            let canonical_target = match dunce::canonicalize(&absolute_target_dir) {
-                Ok(path) => path,
-                Err(_) => return Ok(MatchResult::Boolean(false)),
-            };
-            let canonical_file_path = match dunce::canonicalize(&context.path) {
-                Ok(path) => path,
-                // This should not fail for a file that is being processed, but be robust.
-                Err(_) => return Ok(MatchResult::Boolean(false)),
-            };
-
-            // `starts_with` handles the "is contained within" logic perfectly for exact paths.
-            // e.g., a file in `/a/b/c` is also considered "in" `/a/b`.
-            Ok(MatchResult::Boolean(
-                canonical_file_path.starts_with(&canonical_target),
-            ))
+    // If the output format is `Cat` (likely for piping), we should not use color
+    // unless the user has explicitly forced it with `Always`.
+    if let crate::Format::Cat = args.format {
+        if args.color != ColorChoice::Always {
+            use_color = false;
         }
     }
+
+    // --- 5. Format and print results ---
+    let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
+        Box::new(File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
+    };
+
+    formatter::print_output(
+        &mut writer,
+        &matching_files,
+        &args.format,
+        args.line_numbers,
+        args.no_headers,
+        use_color,
+        args.context.unwrap_or(0),
+    )?;
+
+    Ok(())
 }
+
+/// Performs the search logic and returns the matching files and their hunks.
+/// This function is separated from `run_search` to be testable.
+pub fn perform_search(args: &SearchArgs) -> Result<Vec<(PathBuf, Vec<Range>)>> {
+    // --- Load Config and Build Query ---
+    let config = config::load_config()?;
+    let mut final_query = args.query.join(" ");
+
+    for preset_name in args.preset.iter().rev() {
+        let preset_query = config
+            .presets
+            .get(preset_name)
+            .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
+
+        if final_query.is_empty() {
+            final_query = format!("({preset_query})");
+        } else {
+            final_query = format!("({preset_query}) & ({final_query})");
+        }
+    }
+
+    if final_query.is_empty() {
+        return Err(anyhow!(
+            "Empty query. Provide a query string or use a preset."
+        ));
+    }
+
+    // --- 1. Find initial candidates ---
+    let candidate_files = get_candidate_files(
+        &args.root,
+        args.no_ignore,
+        args.hidden,
+        args.max_depth,
+    )?;
+
+    // --- 2. Parse query ---
+    let ast = parser::parse_query(&final_query)?;
+
+    // --- 3. Pre-filtering Pass (Metadata) ---
+    // This pass uses an evaluator with only fast metadata predicates.
+    // It quickly reduces the number of files needing full evaluation.
+    let metadata_registry = predicates::create_metadata_predicate_registry();
+    let pre_filter_evaluator = Evaluator::new(ast.clone(), metadata_registry);
+
+    let first_error = Mutex::new(None);
+    let pre_filtered_files: Vec<PathBuf> = candidate_files
+        .into_iter() // This pass is not parallel, it's fast enough.
+        .filter(|path| {
+            if first_error.lock().unwrap().is_some() {
+                return false;
+            }
+            let mut context = FileContext::new(path.clone(), args.root.clone());
+            match pre_filter_evaluator.evaluate(&mut context) {
+                Ok(result) => result.is_match(),
+                Err(e) => {
+                    let mut error_guard = first_error.lock().unwrap();
+                    if error_guard.is_none() {
+                        *error_guard =
+                            Some(anyhow!("Error during pre-filter on {}: {}", path.display(), e));
+                    }
+                    false
+                }
+            }
+        })
+        .collect();
+
+    if let Some(e) = first_error.into_inner().unwrap() {
+        return Err(e);
+    }
+
+    // --- 4. Main Evaluation Pass (Content + Semantic) ---
+    // This pass uses the full evaluator on the smaller, pre-filtered set of files.
+    let full_registry = predicates::create_predicate_registry();
+    let evaluator = Evaluator::new(ast, full_registry);
+
+    let first_error = Mutex::new(None);
+    let mut matching_files: Vec<(PathBuf, Vec<Range>)> = pre_filtered_files
+        .par_iter()
+        .filter_map(|path| {
+            if first_error.lock().unwrap().is_some() {
+                return None;
+            }
+            let mut context = FileContext::new(path.clone(), args.root.clone());
+            match evaluator.evaluate(&mut context) {
+                Ok(MatchResult::Boolean(true)) => Some((path.clone(), Vec::new())),
+                Ok(MatchResult::Boolean(false)) => None,
+                Ok(MatchResult::Hunks(hunks)) => {
+                    if hunks.is_empty() {
+                        None
+                    } else {
+                        Some((path.clone(), hunks))
+                    }
+                }
+                Err(e) => {
+                    let mut error_guard = first_error.lock().unwrap();
+                    if error_guard.is_none() {
+                        *error_guard =
+                            Some(anyhow!("Error evaluating file {}: {}", path.display(), e));
+                    }
+                    None
+                }
+            }
+        })
+        .collect();
+
+    if let Some(e) = first_error.into_inner().unwrap() {
+        return Err(e);
+    }
+
+    matching_files.sort_by(|a, b| a.0.cmp(&b.0));
+
+    Ok(matching_files)
+}
+
+
+/// Walks the directory, respecting .gitignore, and applies our own smart defaults.
+fn get_candidate_files(
+    root: &PathBuf,
+    no_ignore: bool,
+    hidden: bool,
+    max_depth: Option<usize>,
+) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut walker_builder = WalkBuilder::new(root);
+
+    walker_builder.hidden(!hidden).max_depth(max_depth);
+
+    if no_ignore {
+        // If --no-ignore is passed, disable everything.
+        walker_builder
+            .ignore(false)
+            .git_ignore(false)
+            .git_global(false)
+            .git_exclude(false);
+    } else {
+        // Layer 1: Our "sane defaults". These have the lowest precedence.
+        let default_ignores = "
+           # Default rdump ignores
+           node_modules/
+           target/
+           dist/
+           build/
+           .git/
+           .svn/
+           .hg/
+           *.pyc
+           __pycache__/
+       ";
+        let mut temp_ignore = NamedTempFile::new()?;
+        write!(temp_ignore, "{default_ignores}")?;
+        walker_builder.add_ignore(temp_ignore.path());
+
+        // Layer 2: A user's custom global ignore file.
+        if let Some(global_ignore_path) = dirs::config_dir().map(|p| p.join("rdump/ignore")) {
+            if global_ignore_path.exists() {
+                if let Some(err) = walker_builder.add_ignore(global_ignore_path) {
+                    eprintln!("Warning: could not add global ignore file: {err}");
+                }
+            }
+        }
+
+        // Layer 3: A user's custom project-local .rdumpignore file.
+        walker_builder.add_custom_ignore_filename(".rdumpignore");
+
+        // Layer 4: Standard .gitignore files are enabled by default.
+        // walker_builder.git_global(true);
+        // walker_builder.git_ignore(true);
+    }
+
+    for result in walker_builder.build() {
+        let entry = result?;
+        if entry.file_type().is_some_and(|ft| ft.is_file()) {
+            files.push(entry.into_path());
+        }
+    }
+    Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn get_sorted_file_names(
+        root: &PathBuf,
+        no_ignore: bool,
+        hidden: bool,
+        max_depth: Option<usize>,
+    ) -> Vec<String> {
+        let mut paths = get_candidate_files(root, no_ignore, hidden, max_depth).unwrap();
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_custom_rdumpignore_file() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "*.log").unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
+        fs::File::create(root.join("app.log")).unwrap();
+
+        let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
+        assert_eq!(files, vec!["app.js"]);
+    }
+
+    #[test]
+    fn test_unignore_via_rdumpignore() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        let node_modules = root.join("node_modules");
+        fs::create_dir(&node_modules).unwrap();
+        fs::File::create(node_modules.join("some_dep.js")).unwrap();
+        fs::File::create(root.join("app.js")).unwrap();
+
+        let mut ignore_file = fs::File::create(root.join(".rdumpignore")).unwrap();
+        writeln!(ignore_file, "!node_modules/").unwrap();
+
+        let files = get_sorted_file_names(&root.to_path_buf(), false, false, None);
+        assert_eq!(files.len(), 2);
+        assert!(files.contains(&"app.js".to_string()));
+        let expected_path = PathBuf::from("node_modules").join("some_dep.js");
+        assert!(files.contains(&expected_path.to_string_lossy().to_string()));
+    }
+}
+```
+
+### 2. Adding Missing Test Cases
+
+Now I will add the specific test cases you requested.
+
+#### 2.1. Code-Aware "Not Found" Precision
+
+This test ensures that a query for a non-existent semantic item does not produce false positives.
+
+File: `rdump/src/predicates/mod.rs`
+```rust
+// ... (existing code in predicates/mod.rs) ...
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    // The `code_aware` suite remains here as it tests the interaction
+    // of multiple profiles, which is a responsibility of this parent module.
+    #[test]
+    fn test_code_aware_evaluator_full_rust_suite() {
+// ... (existing test) ...
+    }
+
+    #[test]
+    fn test_code_aware_evaluator_not_found() {
+        let rust_code = r#"
+            // This file has some content
+            pub struct AppConfig {}
+            fn launch_app() {}
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("some_file.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(rust_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
+
+        // Search for a struct that does not exist.
+        let result = evaluator
+            .evaluate(&mut ctx, &PredicateKey::Struct, "NonExistentStruct")
+            .unwrap();
+
+        assert!(
+            !result.is_match(),
+            "Should not find a struct that doesn't exist"
+        );
+    }
+
+
+    #[test]
+    fn test_code_aware_evaluator_python_suite() {
+// ... (existing test) ...
+    }
+
+// ... (rest of existing tests in predicates/mod.rs) ...
+}
+```
+
+#### 2.2. `in` Predicate Wildcard Functionality
+
+These tests verify that the `in` predicate correctly handles single-level (`*`) and recursive (`**`) wildcards when matching directory paths.
+
+File: `rdump/src/predicates/in_path.rs`
+```rust
+// ... (existing code in predicates/in_path.rs) ...
 
 #[cfg(test)]
 mod tests {
@@ -90,160 +395,214 @@ mod tests {
 
     #[test]
     fn test_in_path_evaluator_exact() -> Result<()> {
-        let evaluator = InPathEvaluator;
-
-        // Create a temporary directory structure
-        let root_dir = tempdir()?;
-        let root_path = root_dir.path();
-
-        let project_dir = root_path.join("project");
-        let src_dir = project_dir.join("src");
-        let other_project_dir = root_path.join("other_project");
-        fs::create_dir_all(&src_dir)?;
-        fs::create_dir_all(&other_project_dir)?;
-
-        let main_rs_path = src_dir.join("main.rs");
-        fs::write(&main_rs_path, "fn main() {}")?;
-
-        // --- Test Cases ---
-
-        let mut context = FileContext::new(main_rs_path.clone(), root_path.to_path_buf());
-
-        // 1. Absolute Path: Exact parent directory
-        assert!(evaluator
-            .evaluate(&mut context, &PredicateKey::In, src_dir.to_str().unwrap())?
-            .is_match());
-
-        // 2. Absolute Path: Grandparent directory
-        assert!(evaluator
-            .evaluate(
-                &mut context,
-                &PredicateKey::In,
-                project_dir.to_str().unwrap()
-            )?
-            .is_match());
-
-        // 3. Absolute Path: Non-matching directory
-        assert!(!evaluator
-            .evaluate(
-                &mut context,
-                &PredicateKey::In,
-                other_project_dir.to_str().unwrap()
-            )?
-            .is_match());
-
-        // 4. Relative Path: from the root
-        assert!(evaluator
-            .evaluate(&mut context, &PredicateKey::In, "project/src")?
-            .is_match());
-
-        // 5. Relative Path: with dot-slash
-        assert!(evaluator
-            .evaluate(&mut context, &PredicateKey::In, "./project/src")?
-            .is_match());
-
-        // 6. Relative Path: non-matching
-        assert!(!evaluator
-            .evaluate(&mut context, &PredicateKey::In, "other_project")?
-            .is_match());
-
-        // 7. A file is considered to be "in" the directory represented by its own path
-        assert!(evaluator
-            .evaluate(
-                &mut context,
-                &PredicateKey::In,
-                main_rs_path.to_str().unwrap()
-            )?
-            .is_match());
-
-        // 8. Non-existent directory should not error, just return false
-        assert!(!evaluator
-            .evaluate(&mut context, &PredicateKey::In, "non_existent_dir")?
-            .is_match());
-
-        Ok(())
+// ... (existing test) ...
     }
 
     #[test]
     fn test_in_path_evaluator_wildcard() -> Result<()> {
-        let evaluator = InPathEvaluator;
+// ... (existing test) ...
+    }
 
-        // Create a temporary directory structure
+    #[test]
+    fn test_in_path_evaluator_relative_wildcard() -> Result<()> {
+// ... (existing test) ...
+    }
+
+    #[test]
+    fn test_in_path_evaluator_advanced_wildcards() -> Result<()> {
+        let evaluator = InPathEvaluator;
         let root_dir = tempdir()?;
         let root_path = root_dir.path();
 
-        let project_a_src = root_path.join("project_a").join("src");
-        let project_b_source = root_path.join("project_b").join("source");
-        let other_src = root_path.join("other").join("src");
-        fs::create_dir_all(&project_a_src)?;
-        fs::create_dir_all(&project_b_source)?;
-        fs::create_dir_all(&other_src)?;
+        // Structure:
+        //  /src/api/routes.js
+        //  /src/db/connect.js
+        //  /lib/auth/token.js
+        //  /lib/deep/down/utils.js
+        let src_api = root_path.join("src").join("api");
+        let src_db = root_path.join("src").join("db");
+        let lib_auth = root_path.join("lib").join("auth");
+        let lib_deep = root_path.join("lib").join("deep").join("down");
+        fs::create_dir_all(&src_api)?;
+        fs::create_dir_all(&src_db)?;
+        fs::create_dir_all(&lib_auth)?;
+        fs::create_dir_all(&lib_deep)?;
 
-        let file_a = project_a_src.join("main.rs");
-        fs::write(&file_a, "")?;
-        let file_b = project_b_source.join("lib.rs");
-        fs::write(&file_b, "")?;
-        let file_c = other_src.join("component.js");
-        fs::write(&file_c, "")?;
+        let file_in_src_api = src_api.join("routes.js");
+        fs::write(&file_in_src_api, "")?;
+        let file_in_src_db = src_db.join("connect.js");
+        fs::write(&file_in_src_db, "")?;
+        let file_in_lib_auth = lib_auth.join("token.js");
+        fs::write(&file_in_lib_auth, "")?;
+        let file_in_lib_deep = lib_deep.join("utils.js");
+        fs::write(&file_in_lib_deep, "")?;
 
-        let mut context_a = FileContext::new(file_a, root_path.to_path_buf());
-        let mut context_b = FileContext::new(file_b, root_path.to_path_buf());
-        let mut context_c = FileContext::new(file_c, root_path.to_path_buf());
+        let mut ctx_api = FileContext::new(file_in_src_api, root_path.to_path_buf());
+        let mut ctx_db = FileContext::new(file_in_src_db, root_path.to_path_buf());
+        let mut ctx_auth = FileContext::new(file_in_lib_auth, root_path.to_path_buf());
+        let mut ctx_deep = FileContext::new(file_in_lib_deep, root_path.to_path_buf());
 
-        // --- Test Cases ---
-
-        // 1. `**/src` should match files in any `src` directory
+        // Test single-level wildcard `in:'src/*'`
         assert!(evaluator
-            .evaluate(&mut context_a, &PredicateKey::In, "**/src")?
-            .is_match());
-        assert!(!evaluator
-            .evaluate(&mut context_b, &PredicateKey::In, "**/src")?
-            .is_match());
-        assert!(evaluator
-            .evaluate(&mut context_c, &PredicateKey::In, "**/src")?
-            .is_match());
-
-        // 2. `project_*/src` glob needs to match against the absolute path.
-        let project_wildcard_glob = root_path
-            .join("project_*")
-            .join("src")
-            .to_string_lossy()
-            .to_string();
-        assert!(evaluator
-            .evaluate(&mut context_a, &PredicateKey::In, &project_wildcard_glob)?
-            .is_match());
-        assert!(!evaluator
-            .evaluate(&mut context_b, &PredicateKey::In, &project_wildcard_glob)?
-            .is_match());
-        assert!(!evaluator
-            .evaluate(&mut context_c, &PredicateKey::In, &project_wildcard_glob)?
-            .is_match());
-
-        // 3. More specific glob `**/project_a/s?c`
-        assert!(evaluator
-            .evaluate(&mut context_a, &PredicateKey::In, "**/project_a/s?c")?
-            .is_match());
-        assert!(!evaluator
-            .evaluate(&mut context_b, &PredicateKey::In, "**/project_a/s?c")?
-            .is_match());
-
-        // 4. Glob that should not match anything
-        assert!(!evaluator
-            .evaluate(&mut context_a, &PredicateKey::In, "**/test")?
-            .is_match());
-
-        // 5. Glob matching a different directory `**/so*ce`
-        assert!(!evaluator
-            .evaluate(&mut context_a, &PredicateKey::In, "**/so*ce")?
+            .evaluate(&mut ctx_api, &PredicateKey::In, "src/*")?
             .is_match());
         assert!(evaluator
-            .evaluate(&mut context_b, &PredicateKey::In, "**/so*ce")?
+            .evaluate(&mut ctx_db, &PredicateKey::In, "src/*")?
             .is_match());
         assert!(!evaluator
-            .evaluate(&mut context_c, &PredicateKey::In, "**/so*ce")?
+            .evaluate(&mut ctx_auth, &PredicateKey::In, "src/*")?
+            .is_match());
+
+        // Test recursive globstar `in:'**/*'`
+        assert!(evaluator
+            .evaluate(&mut ctx_deep, &PredicateKey::In, "lib/**")?
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx_deep, &PredicateKey::In, "lib/d*p/**")?
+            .is_match());
+         assert!(evaluator
+            .evaluate(&mut ctx_auth, &PredicateKey::In, "lib/**")?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut ctx_api, &PredicateKey::In, "lib/**")?
+            .is_match());
+
+        // Test non-matching wildcard
+        assert!(!evaluator
+            .evaluate(&mut ctx_api, &PredicateKey::In, "dist/*")?
             .is_match());
 
         Ok(())
     }
 }
+```
+
+#### 2.3. Complex Query Logic & Predicate Interaction
+
+With the `search.rs` refactoring complete, I can now add a new integration test file to test complex queries that combine different predicate types.
+
+First, create the test file: `rdump/tests/search_integration.rs`
+
+```rust
+use anyhow::Result;
+use rdump::{commands::search::perform_search, ColorChoice, Format, SearchArgs};
+use std::fs;
+use std::path::{Path, PathBuf};
+use tempfile::tempdir;
+
+/// Helper to create a default SearchArgs for testing.
+/// We enable `no_ignore` and `hidden` to make tests self-contained and predictable.
+fn create_test_args(root: &Path, query: &str) -> SearchArgs {
+    SearchArgs {
+        query: vec![query.to_string()],
+        root: root.to_path_buf(),
+        preset: vec![],
+        output: None,
+        line_numbers: false,
+        no_headers: false,
+        format: Format::Paths,
+        no_ignore: true, // Crucial for hermetic tests
+        hidden: true,    // Crucial for hermetic tests
+        color: ColorChoice::Never,
+        max_depth: None,
+        context: None,
+        find: false,
+    }
+}
+
+/// Helper to run a search and return the relative paths of matching files.
+fn run_test_search(root: &Path, query: &str) -> Result<Vec<String>> {
+    let args = create_test_args(root, query);
+    let results = perform_search(&args)?;
+    let mut paths: Vec<String> = results
+        .into_iter()
+        .map(|(p, _)| {
+            p.strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/") // Normalize for Windows
+        })
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+
+/// Sets up a standard test project structure.
+///
+/// /src/user.rs        (struct User, // TODO)
+/// /src/order.rs       (struct Order)
+/// /tests/user_test.rs (fn test_user)
+/// /benches/user.rs    (fn bench_user)
+/// /docs/api.md        (API Docs)
+fn setup_test_project() -> Result<tempfile::TempDir> {
+    let dir = tempdir()?;
+    let root = dir.path();
+
+    fs::create_dir_all(root.join("src"))?;
+    fs::create_dir_all(root.join("tests"))?;
+    fs::create_dir_all(root.join("benches"))?;
+    fs::create_dir_all(root.join("docs"))?;
+
+    fs::write(
+        root.join("src/user.rs"),
+        "// TODO: Add more fields\nstruct User {}",
+    )?;
+    fs::write(root.join("src/order.rs"), "struct Order {}")?;
+    fs::write(root.join("tests/user_test.rs"), "fn test_user() {}")?;
+    fs::write(root.join("benches/user.rs"), "fn bench_user() {}")?;
+    fs::write(root.join("docs/api.md"), "# API Docs")?;
+
+    Ok(dir)
+}
+
+#[test]
+fn test_query_with_negated_group() -> Result<()> {
+    let dir = setup_test_project()?;
+    let root = dir.path();
+
+    // Find all rust files that are NOT in the tests or benches directories.
+    let query = "ext:rs & !(in:tests | in:benches)";
+    let results = run_test_search(root, query)?;
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results, vec!["src/order.rs", "src/user.rs"]);
+    Ok(())
+}
+
+#[test]
+fn test_query_combining_semantic_and_content_predicates() -> Result<()> {
+    let dir = setup_test_project()?;
+    let root = dir.path();
+
+    // Find a struct named 'User' that also has a 'TODO' comment.
+    let query = "struct:User & comment:TODO";
+    let results = run_test_search(root, query)?;
+    assert_eq!(results, vec!["src/user.rs"]);
+
+    // Find a struct named 'Order' that also has a 'TODO' comment (it doesn't).
+    let query_no_match = "struct:Order & comment:TODO";
+    let results_no_match = run_test_search(root, query_no_match)?;
+    assert!(results_no_match.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn test_query_combining_metadata_and_semantic_predicates() -> Result<()> {
+    let dir = setup_test_project()?;
+    let root = dir.path();
+
+    // Find a struct named 'User' but only within the 'src' directory.
+    let query = "in:src & struct:User";
+    let results = run_test_search(root, query)?;
+    assert_eq!(results, vec!["src/user.rs"]);
+
+    // Search for a function inside the 'docs' directory (it won't find one).
+    let query_no_match = "in:docs & func:test_user";
+    let results_no_match = run_test_search(root, query_no_match)?;
+    assert!(results_no_match.is_empty());
+
+    Ok(())
+}
+
 ```

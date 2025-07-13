@@ -257,4 +257,71 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_in_path_evaluator_advanced_wildcards() -> Result<()> {
+        let evaluator = InPathEvaluator;
+        let root_dir = tempdir()?;
+        let root_path = root_dir.path();
+
+        // Structure:
+        //  /src/api/routes.js
+        //  /src/db/connect.js
+        //  /lib/auth/token.js
+        //  /lib/deep/down/utils.js
+        let src_api = root_path.join("src").join("api");
+        let src_db = root_path.join("src").join("db");
+        let lib_auth = root_path.join("lib").join("auth");
+        let lib_deep = root_path.join("lib").join("deep").join("down");
+        fs::create_dir_all(&src_api)?;
+        fs::create_dir_all(&src_db)?;
+        fs::create_dir_all(&lib_auth)?;
+        fs::create_dir_all(&lib_deep)?;
+
+        let file_in_src_api = src_api.join("routes.js");
+        fs::write(&file_in_src_api, "")?;
+        let file_in_src_db = src_db.join("connect.js");
+        fs::write(&file_in_src_db, "")?;
+        let file_in_lib_auth = lib_auth.join("token.js");
+        fs::write(&file_in_lib_auth, "")?;
+        let file_in_lib_deep = lib_deep.join("utils.js");
+        fs::write(&file_in_lib_deep, "")?;
+
+        let mut ctx_api = FileContext::new(file_in_src_api, root_path.to_path_buf());
+        let mut ctx_db = FileContext::new(file_in_src_db, root_path.to_path_buf());
+        let mut ctx_auth = FileContext::new(file_in_lib_auth, root_path.to_path_buf());
+        let mut ctx_deep = FileContext::new(file_in_lib_deep, root_path.to_path_buf());
+
+        // Test single-level wildcard `in:'src/*'`
+        assert!(evaluator
+            .evaluate(&mut ctx_api, &PredicateKey::In, "src/*")?
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx_db, &PredicateKey::In, "src/*")?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut ctx_auth, &PredicateKey::In, "src/*")?
+            .is_match());
+
+        // Test recursive globstar `in:'**/*'`
+        assert!(evaluator
+            .evaluate(&mut ctx_deep, &PredicateKey::In, "lib/**")?
+            .is_match());
+        assert!(evaluator
+            .evaluate(&mut ctx_deep, &PredicateKey::In, "lib/d*p/**")?
+            .is_match());
+         assert!(evaluator
+            .evaluate(&mut ctx_auth, &PredicateKey::In, "lib/**")?
+            .is_match());
+        assert!(!evaluator
+            .evaluate(&mut ctx_api, &PredicateKey::In, "lib/**")?
+            .is_match());
+
+        // Test non-matching wildcard
+        assert!(!evaluator
+            .evaluate(&mut ctx_api, &PredicateKey::In, "dist/*")?
+            .is_match());
+
+        Ok(())
+    }
 }

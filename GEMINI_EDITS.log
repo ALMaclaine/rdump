@@ -1,4 +1,3 @@
-
 Date: 2025-07-12
 Change: Implemented test cases for ignore file logic from missing-test-cases.txt.
 - Added `test_rdumpignore_excludes_matching_pattern`.
@@ -14,3 +13,9 @@ Change: Implemented test cases for ignore file logic from missing-test-cases.txt
   - This ensures that '.rdumpignore' files can correctly override '.gitignore' rules.
   - Cleaned up 'use' statements in 'rdump/tests/ignore.rs'.
 
+Date: 2025-07-13
+- Refactored `rdump/src/commands/search.rs` to separate search logic from output formatting, enabling better testing of complex queries.
+- Added a new integration test file `rdump/tests/search_integration.rs` to verify complex query logic and predicate interactions.
+- Added a test case to `rdump/src/predicates/mod.rs` to ensure code-aware queries for non-existent items do not produce false positives.
+- Added test cases to `rdump/src/predicates/in_path.rs` to verify wildcard functionality (`*` and `**`) for directory path matching.
+- Refactored the `rdump` crate from a binary-only crate to a library with a binary entrypoint. This involved creating a `src/lib.rs` and moving shared code into it, which resolved build issues with the new integration tests.

@@ -35,11 +35,3 @@ globset = "0.4.10"
 assert_cmd = "2.0.14"
 predicates = "3.1.0"
 tree-sitter-rust = "0.21.0"
-
-[[test]]
-name = "rust_search_traits"
-path = "tests/rust_search_traits.rs"
-
-[[test]]
-name = "rust_search_macros"
-path = "tests/rust_search_macros.rs"

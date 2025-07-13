@@ -26,6 +26,52 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         args.format = crate::Format::Find;
     }
 
+    // --- Perform the actual search ---
+    let matching_files = perform_search(&args)?;
+
+    // --- Determine if color should be used ---
+    let mut use_color = match args.color {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => atty::is(Stream::Stdout),
+    };
+
+    // If outputting to a file, disable color unless explicitly forced.
+    if args.output.is_some() && args.color != ColorChoice::Always {
+        use_color = false;
+    }
+
+    // If the output format is `Cat` (likely for piping), we should not use color
+    // unless the user has explicitly forced it with `Always`.
+    if let crate::Format::Cat = args.format {
+        if args.color != ColorChoice::Always {
+            use_color = false;
+        }
+    }
+
+    // --- 5. Format and print results ---
+    let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
+        Box::new(File::create(output_path)?)
+    } else {
+        Box::new(io::stdout())
+    };
+
+    formatter::print_output(
+        &mut writer,
+        &matching_files,
+        &args.format,
+        args.line_numbers,
+        args.no_headers,
+        use_color,
+        args.context.unwrap_or(0),
+    )?;
+
+    Ok(())
+}
+
+/// Performs the search logic and returns the matching files and their hunks.
+/// This function is separated from `run_search` to be testable.
+pub fn perform_search(args: &SearchArgs) -> Result<Vec<(PathBuf, Vec<Range>)>> {
     // --- Load Config and Build Query ---
     let config = config::load_config()?;
     let mut final_query = args.query.join(" ");
@@ -50,8 +96,12 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     }
 
     // --- 1. Find initial candidates ---
-    let candidate_files =
-        get_candidate_files(&args.root, args.no_ignore, args.hidden, args.max_depth)?;
+    let candidate_files = get_candidate_files(
+        &args.root,
+        args.no_ignore,
+        args.hidden,
+        args.max_depth,
+    )?;
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&final_query)?;
@@ -75,7 +125,8 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
                 Err(e) => {
                     let mut error_guard = first_error.lock().unwrap();
                     if error_guard.is_none() {
-                        *error_guard = Some(anyhow!("Error during pre-filter on {}: {}", path.display(), e));
+                        *error_guard =
+                            Some(anyhow!("Error during pre-filter on {}: {}", path.display(), e));
                     }
                     false
                 }
@@ -85,26 +136,6 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     if let Some(e) = first_error.into_inner().unwrap() {
         return Err(e);
-    }
-
-    // --- Determine if color should be used ---
-    let mut use_color = match args.color {
-        ColorChoice::Always => true,
-        ColorChoice::Never => false,
-        ColorChoice::Auto => atty::is(Stream::Stdout),
-    };
-
-    // If outputting to a file, disable color unless explicitly forced.
-    if args.output.is_some() && args.color != ColorChoice::Always {
-        use_color = false;
-    }
-
-    // If the output format is `Cat` (likely for piping), we should not use color
-    // unless the user has explicitly forced it with `Always`.
-    if let crate::Format::Cat = args.format {
-        if args.color != ColorChoice::Always {
-            use_color = false;
-        }
     }
 
     // --- 4. Main Evaluation Pass (Content + Semantic) ---
@@ -133,7 +164,8 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
                 Err(e) => {
                     let mut error_guard = first_error.lock().unwrap();
                     if error_guard.is_none() {
-                        *error_guard = Some(anyhow!("Error evaluating file {}: {}", path.display(), e));
+                        *error_guard =
+                            Some(anyhow!("Error evaluating file {}: {}", path.display(), e));
                     }
                     None
                 }
@@ -147,25 +179,9 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 
     matching_files.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // --- 5. Format and print results ---
-    let mut writer: Box<dyn Write> = if let Some(output_path) = &args.output {
-        Box::new(File::create(output_path)?)
-    } else {
-        Box::new(io::stdout())
-    };
-
-    formatter::print_output(
-        &mut writer,
-        &matching_files,
-        &args.format,
-        args.line_numbers,
-        args.no_headers,
-        use_color,
-        args.context.unwrap_or(0),
-    )?;
-
-    Ok(())
+    Ok(matching_files)
 }
+
 
 /// Walks the directory, respecting .gitignore, and applies our own smart defaults.
 fn get_candidate_files(
@@ -290,5 +306,3 @@ mod tests {
         assert!(files.contains(&expected_path.to_string_lossy().to_string()));
     }
 }
-
-

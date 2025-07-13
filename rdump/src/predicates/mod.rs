@@ -172,6 +172,34 @@ mod tests {
     }
 
     #[test]
+    fn test_code_aware_evaluator_not_found() {
+        let rust_code = r#"
+            // This file has some content
+            pub struct AppConfig {}
+            fn launch_app() {}
+        "#;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("some_file.rs");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        file.write_all(rust_code.as_bytes()).unwrap();
+
+        let evaluator = CodeAwareEvaluator;
+        let mut ctx = FileContext::new(file_path.clone(), file_path.parent().unwrap().to_path_buf());
+
+        // Search for a struct that does not exist.
+        let result = evaluator
+            .evaluate(&mut ctx, &PredicateKey::Struct, "NonExistentStruct")
+            .unwrap();
+
+        assert!(
+            !result.is_match(),
+            "Should not find a struct that doesn't exist"
+        );
+    }
+
+
+    #[test]
     fn test_code_aware_evaluator_python_suite() {
         let python_code = r#"
 # FIXME: use a real database
