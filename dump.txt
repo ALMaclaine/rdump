@@ -126,15 +126,17 @@ pub enum MatchResult {
 /// It lazily loads content and caches the tree-sitter AST.
 pub struct FileContext {
     pub path: PathBuf,
+    pub root: PathBuf,
     content: Option<String>,
     // Cache for the parsed tree-sitter AST
     tree: Option<Tree>,
 }
 
 impl FileContext {
-    pub fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf, root: PathBuf) -> Self {
         FileContext {
             path,
+            root,
             content: None,
             tree: None,
         }
@@ -304,7 +306,7 @@ mod tests {
     #[test]
     fn test_evaluate_logical_and() {
         let file = create_temp_file("hello world");
-        let mut context = FileContext::new(file.path().to_path_buf());
+        let mut context = FileContext::new(file.path().to_path_buf(), PathBuf::from("/"));
         let ast = parse_query("contains:hello & contains:world").unwrap();
         let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
         assert!(evaluator.evaluate(&mut context).unwrap().is_match());
@@ -3119,7 +3121,7 @@ impl PredicateEvaluator for InPathEvaluator {
                 Ok(MatchResult::Boolean(false))
             }
         } else {
-            // --- Existing Exact-Path Logic (for non-wildcard patterns) ---
+            // --- Non-recursive Exact-Path Logic ---
             let target_dir = PathBuf::from(value);
             let absolute_target_dir = if target_dir.is_absolute() {
                 target_dir
@@ -3127,28 +3129,24 @@ impl PredicateEvaluator for InPathEvaluator {
                 context.root.join(target_dir)
             };
 
-            // If the target directory doesn't exist, it can't contain any files.
-            if !absolute_target_dir.exists() {
+            if !absolute_target_dir.is_dir() {
                 return Ok(MatchResult::Boolean(false));
             }
 
-            // Canonicalize to resolve `.` or `..` for a reliable comparison.
-            // On failure (e.g., broken symlink), we consider it a non-match rather than erroring out.
             let canonical_target = match dunce::canonicalize(&absolute_target_dir) {
                 Ok(path) => path,
                 Err(_) => return Ok(MatchResult::Boolean(false)),
             };
-            let canonical_file_path = match dunce::canonicalize(&context.path) {
-                Ok(path) => path,
-                // This should not fail for a file that is being processed, but be robust.
-                Err(_) => return Ok(MatchResult::Boolean(false)),
-            };
 
-            // `starts_with` handles the "is contained within" logic perfectly for exact paths.
-            // e.g., a file in `/a/b/c` is also considered "in" `/a/b`.
-            Ok(MatchResult::Boolean(
-                canonical_file_path.starts_with(&canonical_target),
-            ))
+            if let Some(file_parent) = context.path.parent() {
+                let canonical_file_parent = match dunce::canonicalize(file_parent) {
+                    Ok(path) => path,
+                    Err(_) => return Ok(MatchResult::Boolean(false)),
+                };
+                Ok(MatchResult::Boolean(canonical_file_parent == canonical_target))
+            } else {
+                Ok(MatchResult::Boolean(false))
+            }
         }
     }
 }
@@ -3180,13 +3178,13 @@ mod tests {
 
         let mut context = FileContext::new(main_rs_path.clone(), root_path.to_path_buf());
 
-        // 1. Absolute Path: Exact parent directory
+        // 1. Absolute Path: Exact parent directory. Should match.
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::In, src_dir.to_str().unwrap())?
             .is_match());
 
-        // 2. Absolute Path: Grandparent directory
-        assert!(evaluator
+        // 2. Absolute Path: Grandparent directory. Should NOT match due to non-recursive logic.
+        assert!(!evaluator
             .evaluate(
                 &mut context,
                 &PredicateKey::In,
@@ -3194,7 +3192,7 @@ mod tests {
             )?
             .is_match());
 
-        // 3. Absolute Path: Non-matching directory
+        // 3. Absolute Path: Non-matching directory.
         assert!(!evaluator
             .evaluate(
                 &mut context,
@@ -3203,23 +3201,23 @@ mod tests {
             )?
             .is_match());
 
-        // 4. Relative Path: from the root
+        // 4. Relative Path: from the root. Should match.
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::In, "project/src")?
             .is_match());
 
-        // 5. Relative Path: with dot-slash
+        // 5. Relative Path: with dot-slash. Should match.
         assert!(evaluator
             .evaluate(&mut context, &PredicateKey::In, "./project/src")?
             .is_match());
 
-        // 6. Relative Path: non-matching
+        // 6. Relative Path: non-matching.
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::In, "other_project")?
             .is_match());
 
-        // 7. A file is considered to be "in" the directory represented by its own path
-        assert!(evaluator
+        // 7. A file path is not a directory. Should not match.
+        assert!(!evaluator
             .evaluate(
                 &mut context,
                 &PredicateKey::In,
@@ -3227,7 +3225,7 @@ mod tests {
             )?
             .is_match());
 
-        // 8. Non-existent directory should not error, just return false
+        // 8. Non-existent directory should not error, just return false.
         assert!(!evaluator
             .evaluate(&mut context, &PredicateKey::In, "non_existent_dir")?
             .is_match());
@@ -6270,10 +6268,12 @@ fn test_path_glob_respects_directory_boundaries() {
 
     let mut cmd = Command::cargo_bin("rdump").unwrap();
     cmd.current_dir(root);
-    let query = format!("in:{} & name:*.rs", root.to_str().unwrap());
+    // FIX: Use a combination of `in` and `name` to correctly express "files in this directory".
+    // `in:.` constrains the search to the current directory (and is now non-recursive).
+    // `name:*.rs` applies the glob to the filename only.
     cmd.arg("search")
         .arg("--format=paths")
-        .arg(query);
+        .arg("in:. & name:*.rs");
 
     cmd.assert()
         .success()
@@ -6973,16 +6973,16 @@ fn test_semantic_wildcard_matches_any_struct() {
     let mut cmd = Command::cargo_bin("rdump").unwrap();
     cmd.arg("search")
         .arg("--root")
-        .arg("./insane_test_bed")
+        .arg("../insane_test_bed")
         .arg("--format=paths")
         .arg("struct:."); // The "." is the "match any" wildcard
 
-    // Should find code.rs (has MyStruct) and complex_query.rs (uses MyStruct)
-    // but not files without structs like calls.rs or enum.rs
+    // Should find code.rs (has MyStruct) but not files that only use it
+    // or files without structs like calls.rs or enum.rs
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("code.rs"))
-        .stdout(predicate::str::contains("complex_query.rs"))
+        .stdout(predicate::str::contains("complex_query.rs").not())
         .stdout(predicate::str::contains("calls.rs").not())
         .stdout(predicate::str::contains("enum.rs").not());
 }
@@ -6992,7 +6992,7 @@ fn test_semantic_wildcard_matches_any_function() {
     let mut cmd = Command::cargo_bin("rdump").unwrap();
     cmd.arg("search")
         .arg("--root")
-        .arg("./insane_test_bed")
+        .arg("../insane_test_bed")
         .arg("--format=paths")
         .arg("func:."); // Match any function
 

@@ -111,3 +111,34 @@ fn test_negation_of_hunk_predicate_produces_boolean_match() {
         .success()
         .stdout(predicate::str::contains("File: ../insane_test_bed/code.rs"));
 }
+
+#[test]
+fn test_empty_contains_predicate_matches_all_files() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("--format=paths")
+        .arg("contains:''"); // Empty string
+
+    // An empty `contains` query should match every file.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("code.rs"))
+        .stdout(predicate::str::contains("logical1.rs"))
+        .stdout(predicate::str::contains("trait.rs"));
+}
+
+#[test]
+fn test_empty_name_predicate_fails_gracefully() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("name:''"); // Empty glob pattern
+
+    // An empty glob is invalid, so this should fail with a clear error.
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid glob pattern"));
+}

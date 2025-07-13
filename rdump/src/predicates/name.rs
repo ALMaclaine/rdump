@@ -1,7 +1,7 @@
 use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use glob::{MatchOptions, Pattern};
 
 pub(super) struct NameEvaluator;
@@ -12,6 +12,10 @@ impl PredicateEvaluator for NameEvaluator {
         _key: &PredicateKey,
         value: &str,
     ) -> Result<MatchResult> {
+        if value.is_empty() {
+            return Err(anyhow!("Invalid glob pattern: cannot be empty."));
+        }
+
         let file_name = context
             .path
             .file_name()
