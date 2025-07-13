@@ -238,9 +238,25 @@ fn get_candidate_files(
     }
 
     for result in walker_builder.build() {
-        let entry = result?;
-        if entry.file_type().is_some_and(|ft| ft.is_file()) {
-            files.push(entry.into_path());
+        // Handle potential errors from the directory walk itself
+        match result {
+            Ok(entry) => {
+                if entry.file_type().is_some_and(|ft| ft.is_file()) {
+                    files.push(entry.into_path());
+                }
+            }
+            Err(e) => {
+                // If a path doesn't exist (e.g., bad root), this is a hard error.
+                if e.is_io() {
+                    if let Some(inner) = e.clone().into_io_error() {
+                        if inner.kind() == std::io::ErrorKind::NotFound {
+                            return Err(anyhow!("root path '{}' does not exist or is not accessible.", root.display()));
+                        }
+                    }
+                }
+                // For other errors (e.g. permission denied on a sub-dir), just print a warning.
+                eprintln!("Warning: could not access entry: {}", e);
+            }
         }
     }
     Ok(files)

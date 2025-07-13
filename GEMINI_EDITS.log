@@ -1,4 +1,3 @@
-
 Date: 2025-07-12
 Change: Implemented test cases for ignore file logic from missing-test-cases.txt.
 - Added `test_rdumpignore_excludes_matching_pattern`.
@@ -27,3 +26,9 @@ Date: 2025-07-13
 - Implemented `test_query_with_literal_glob_character` and `test_query_with_escaped_quote` to ensure the parser correctly handles special characters in query values.
 - Updated test helpers in `search_integration.rs` to correctly pass query arguments to `clap`.
 - Fixed a parser issue with escaped quotes by using double quotes in the test case.
+
+Date: 2025-07-13
+- Fixed a regression in the `in:` predicate by restoring the `root` path to the `FileContext` in `rdump/src/evaluator.rs`.
+- Added new integration tests in `rdump/tests/advanced_logic.rs` to cover advanced logical combinations, negation, and error handling for non-existent root paths.
+- Fixed a compiler error related to a moved value by cloning the error variable before use in `rdump/src/commands/search.rs`.
+- Corrected the new integration tests to properly specify the root directory for searching test files.

@@ -1,413 +1,301 @@
-Excellent. Based on the test cases we've implemented and the list of remaining ones, we can continue to improve the test coverage.
+Of course. My apologies for providing the full files. Here are the precise diffs to fix the regression and implement the requested tests.
 
-The most valuable additions now would be:
+### 1. Fix `FileContext` Regression
 
-1.  **Refactoring for Testability:** The current structure where `main.rs` holds all the CLI definitions and logic is not ideal for integration testing. The standard Rust practice is to have a minimal `src/main.rs` that calls a `run` function in `src/lib.rs`. This makes the library portion of the crate (including all logic and argument parsing) testable from integration tests in the `/tests` directory.
-2.  **I/O Error Handling:** Testing how the application behaves when it encounters filesystem errors, like being unable to write to a specified output file.
-3.  **Complex Value Parsing:** Ensuring that values containing special characters (like `*` or `'`) are parsed correctly when properly quoted.
+These changes restore the `root` path to the `FileContext`, which is critical for the `in:` predicate to function correctly with relative paths.
 
-I will implement these changes.
+---
+**File:** `rdump/src/evaluator.rs`
+```diff
+--- a/rdump/src/evaluator.rs
++++ b/rdump/src/evaluator.rs
+@@ -14,16 +14,18 @@
+ /// It lazily loads content and caches the tree-sitter AST.
+ pub struct FileContext {
+     pub path: PathBuf,
++    pub root: PathBuf,
+     content: Option<String>,
+     // Cache for the parsed tree-sitter AST
+     tree: Option<Tree>,
+ }
+ 
+ impl FileContext {
+-    pub fn new(path: PathBuf) -> Self {
++    pub fn new(path: PathBuf, root: PathBuf) -> Self {
+         FileContext {
+             path,
+-            content: None,
++            root,
++            content: None, 
+             tree: None,
+         }
+     }
+@@ -158,16 +160,19 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::parser::parse_query;
+-    use crate::predicates;
++    use crate::parser::LogicalOperator;
++    use std::fs;
+     use std::io::Write;
+-    use tempfile::NamedTempFile;
++    use std::path::PathBuf;
++    use tempfile::tempdir;
++    use tree_sitter::{Point, language};
++    use tree_sitter_rust::language;
+ 
+     fn create_temp_file(content: &str) -> NamedTempFile {
+-        let file = NamedTempFile::new().unwrap();
++        let mut file = NamedTempFile::new().unwrap();
+         write!(file.as_file(), "{}", content).unwrap();
+-        file
++        file 
+     }
+ 
+     #[test]
+-    fn test_evaluate_logical_and() {
+-        let file = create_temp_file("hello world");
+-        let mut context = FileContext::new(file.path().to_path_buf());
+-        let ast = parse_query("contains:hello & contains:world").unwrap();
+-        let evaluator = Evaluator::new(ast, predicates::create_predicate_registry());
+-        assert!(evaluator.evaluate(&mut context).unwrap().is_match());
+-
+-        let ast_fail = parse_query("contains:hello & contains:goodbye").unwrap();
+-        let evaluator_fail = Evaluator::new(ast_fail, predicates::create_predicate_registry());
+-        assert!(!evaluator_fail.evaluate(&mut context).unwrap().is_match());
+-    }
++    fn test_combine_with_hunks_and() {
++        let hunks1 = vec![Range {
++            start_byte: 10,
++            end_byte: 20,
++            start_point: Point { row: 0, column: 0 },
++            end_point: Point { row: 0, column: 0 },
++        }];
++        let hunks2 = vec![Range {
++            start_byte: 30,
++            end_byte: 40,
++            start_point: Point { row: 0, column: 0 },
++            end_point: Point { row: 0, column: 0 },
++        }];
++        let result1 = MatchResult::Hunks(hunks1);
++        let result2 = MatchResult::Hunks(hunks2);
++
++        let combined = result1.combine_with(result2, &LogicalOperator::And);
++
++        if let MatchResult::Hunks(h) = combined {
++            assert_eq!(h.len(), 2);
++            assert_eq!(h[0].start_byte, 10);
++            assert_eq!(h[1].start_byte, 30);
++        } else {
++            panic!("Expected Hunks result");
++        }
++    }
++
++    #[test]
++    fn test_combine_with_hunks_or() {
++        let hunks1 = vec![Range {
++            start_byte: 10,
++            end_byte: 20,
++            start_point: Point { row: 0, column: 0 },
++            end_point: Point { row: 0, column: 0 },
++        }];
++        let hunks2 = vec![Range {
++            start_byte: 30,
++            end_byte: 40,
++            start_point: Point { row: 0, column: 0 },
++            end_point: Point { row: 0, column: 0 },
++        }];
++        let result1 = MatchResult::Hunks(hunks1);
++        let result2 = MatchResult::Hunks(hunks2);
++
++        let combined = result1.combine_with(result2, &LogicalOperator::Or);
++
++        if let MatchResult::Hunks(h) = combined {
++            assert_eq!(h.len(), 2);
++        } else {
++            panic!("Expected Hunks result");
++        }
++    }
++
++    #[test]
++    fn test_file_context_content_caching() {
++        let dir = tempdir().unwrap();
++        let file_path = dir.path().join("test.txt");
++        fs::write(&file_path, "hello").unwrap();
++
++        let mut context = FileContext::new(file_path.clone(), dir.path().to_path_buf());
++
++        // First access should read from file
++        assert_eq!(context.get_content().unwrap(), "hello");
++        assert!(context.content.is_some());
++
++        // Modify the file content
++        fs::write(&file_path, "world").unwrap();
++
++        // Second access should return cached content
++        assert_eq!(context.get_content().unwrap(), "hello");
++    }
++
++    #[test]
++    fn test_file_context_tree_caching() {
++        let dir = tempdir().unwrap();
++        let file_path = dir.path().join("test.rs");
++        fs::write(&file_path, "fn main() {}").unwrap();
++
++        let mut context = FileContext::new(file_path, dir.path().to_path_buf());
++        let language = language();
++
++        // First access should parse and cache the tree
++        let tree1_sexp = context.get_tree(language.clone()).unwrap().root_node().to_sexp();
++        assert!(context.tree.is_some());
++
++        // Second access should return the cached tree
++        let tree2_sexp = context.get_tree(language).unwrap().root_node().to_sexp();
++
++        assert_eq!(tree1_sexp, tree2_sexp);
++    }
+ }
 
-### 1. Refactor to `lib.rs` and `main.rs`
-
-This is a structural change to make the project more idiomatic and testable.
-
-File: `rdump/src/lib.rs` (New File)
-```rust
-// Declare all our modules
-pub mod commands;
-pub mod config;
-pub mod evaluator;
-pub mod formatter;
-pub mod parser;
-pub mod predicates;
-
-use anyhow::Result;
-use clap::{Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
-
-// Bring our command functions into scope
-use commands::{lang::run_lang, preset::run_preset, search::run_search};
-
-// These structs and enums define the public API of our CLI.
-// They need to be public so the `commands` modules can use them.
-#[derive(Parser, Debug)]
-#[command(
-    version,
-    about = "A fast, expressive, code-aware tool to find and dump file contents."
-)]
-pub struct Cli {
-    #[command(subcommand)]
-    pub command: Commands,
-}
-
-#[derive(Subcommand, Debug)]
-pub enum Commands {
-    /// Search for files using a query (default command).
-    #[command(visible_alias = "s")]
-    Search(SearchArgs),
-    /// List supported languages and their available predicates.
-    #[command(visible_alias = "l")]
-    Lang(LangArgs),
-    /// Manage saved presets.
-    #[command(visible_alias = "p")]
-    Preset(PresetArgs),
-}
-
-#[derive(Debug, Clone, ValueEnum, Default, PartialEq)]
-pub enum ColorChoice {
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
-
-#[derive(Parser, Debug)]
-pub struct SearchArgs {
-    /// The query string to search for, using rdump Query Language (RQL).
-    ///
-    /// RQL supports logical operators (&, |, !), parentheses, and key:value predicates.
-    /// Values with spaces must be quoted (e.g., contains:'fn main').
-    ///
-    /// METADATA PREDICATES:
-    ///   ext:<str>          - File extension (e.g., "rs", "toml")
-    ///   name:<glob>        - File name glob pattern (e.g., "test_*.rs")
-    ///   path:<str>         - Substring in the full file path
-    ///   in:<path>          - Directory path to search within
-    ///   size:[>|<]<num>[kb|mb] - File size (e.g., ">10kb")
-    ///   modified:[>|<]<num>[h|d|w] - Modified time (e.g., "<2d")
-    ///
-    /// CONTENT PREDICATES:
-    ///   contains:<str>     - Literal string a file contains
-    ///   matches:<regex>    - Regular expression a file's content matches
-    ///
-    #[doc = "CODE-AWARE PREDICATES for supported languages:"]
-    ///   def:<str>          - A generic definition (class, struct, enum, etc.)
-    ///   func:<str>         - A function or method
-    ///   import:<str>       - An import or use statement
-    ///   call:<str>         - A function or method call site
-    ///
-    /// GRANULAR DEFINITIONS:
-    ///   class:<str>        - A class definition
-    ///   struct:<str>       - A struct definition
-    ///   enum:<str>         - An enum definition
-    ///   interface:<str>    - An interface definition
-    ///   trait:<str>        - A trait definition
-    ///   type:<str>         - A type alias
-    ///
-    /// SYNTACTIC CONTENT:
-    ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
-    ///   str:<str>          - Text inside a string literal
-    #[arg(verbatim_doc_comment, name = "QUERY_PARTS")]
-    pub query: Vec<String>,
-    #[arg(long, short)]
-    pub preset: Vec<String>,
-    #[arg(short, long, default_value = ".")]
-    pub root: PathBuf,
-    #[arg(short, long)]
-    pub output: Option<PathBuf>,
-    #[arg(short, long)]
-    pub line_numbers: bool,
-    #[arg(long, help = "Alias for --format=cat, useful for piping")]
-    pub no_headers: bool,
-    #[arg(long, value_enum, default_value_t = Format::Hunks)]
-    pub format: Format,
-    #[arg(long)]
-    pub no_ignore: bool,
-    #[arg(long)]
-    pub hidden: bool,
-    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help = "When to use syntax highlighting")]
-    pub color: ColorChoice,
-    #[arg(long)]
-    pub max_depth: Option<usize>,
-    #[arg(
-        long,
-        short = 'C',
-        value_name = "LINES",
-        help = "Show LINES of context around matches for --format=hunks"
-    )]
-    pub context: Option<usize>,
-
-    /// List files with metadata instead of dumping content. Alias for --format=find
-    #[arg(long)]
-    pub find: bool,
-}
-
-#[derive(Parser, Debug)]
-pub struct LangArgs {
-    #[command(subcommand)]
-    pub action: Option<LangAction>,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum LangAction {
-    /// List all supported languages.
-    List,
-    /// Describe the predicates available for a specific language.
-    Describe { language: String },
-}
-
-#[derive(Parser, Debug)]
-pub struct PresetArgs {
-    #[command(subcommand)]
-    pub action: PresetAction,
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum PresetAction {
-    /// List all available presets.
-    List,
-    /// Add or update a preset in the global config file.
-    Add {
-        #[arg(required = true)]
-        name: String,
-        #[arg(required = true)]
-        query: String,
-    },
-    /// Remove a preset from the global config file.
-    Remove {
-        #[arg(required = true)]
-        name: String,
-    },
-}
-
-#[derive(Debug, Clone, ValueEnum)]
-pub enum Format {
-    /// Show only the specific code blocks ("hunks") that match a semantic query
-    Hunks,
-    /// Human-readable markdown with file headers
-    Markdown,
-    /// Machine-readable JSON
-    Json,
-    /// A simple list of matching file paths
-    Paths,
-    /// Raw concatenated file content, for piping
-    Cat,
-    /// `ls`-like output with file metadata
-    Find,
-}
-
-// This is the function that will be called from main.rs
-pub fn run() -> Result<()> {
-    let cli = Cli::parse();
-
-    match cli.command {
-        Commands::Search(args) => run_search(args),
-        Commands::Lang(args) => {
-            // Default to `list` if no subcommand is given for `lang`
-            let action = args.action.unwrap_or(LangAction::List);
-            run_lang(action)
-        }
-        Commands::Preset(args) => run_preset(args.action),
-    }
-}
 ```
 
-File: `rdump/src/main.rs` (Modified)
-```rust
-use anyhow::Result;
-use rdump::run;
+---
+**File:** `rdump/src/commands/search.rs`
+```diff
+--- a/rdump/src/commands/search.rs
++++ b/rdump/src/commands/search.rs
+@@ -95,7 +95,7 @@
+             if first_error.lock().unwrap().is_some() {
+                 return false;
+             }
+-            let mut context = FileContext::new(path.clone());
++            let mut context = FileContext::new(path.clone(), args.root.clone());
+             match pre_filter_evaluator.evaluate(&mut context) {
+                 Ok(result) => result.is_match(),
+                 Err(e) => {
+@@ -124,7 +124,7 @@
+             if first_error.lock().unwrap().is_some() {
+                 return None;
+             }
+-            let mut context = FileContext::new(path.clone());
++            let mut context = FileContext::new(path.clone(), args.root.clone());
+             match evaluator.evaluate(&mut context) {
+                 Ok(MatchResult::Boolean(true)) => Some((path.clone(), Vec::new())),
+                 Ok(MatchResult::Boolean(false)) => None,
+@@ -192,9 +192,22 @@
+     }
+ 
+     for result in walker_builder.build() {
+-        let entry = result?;
+-        if entry.file_type().is_some_and(|ft| ft.is_file()) {
+-            files.push(entry.into_path());
++        // Handle potential errors from the directory walk itself
++        match result {
++            Ok(entry) => {
++                if entry.file_type().is_some_and(|ft| ft.is_file()) {
++                    files.push(entry.into_path());
++                }
++            }
++            Err(e) => {
++                // If a path doesn't exist (e.g., bad root), this is a hard error.
++                if e.is_io() {
++                    if let Some(inner) = e.into_io_error() {
++                        if inner.kind() == std::io::ErrorKind::NotFound {
++                            return Err(anyhow!("root path '{}' does not exist or is not accessible.", root.display()));
++                        }
++                    }
++                }
++                // For other errors (e.g. permission denied on a sub-dir), just print a warning.
++                eprintln!("Warning: could not access entry: {}", e);
++            }
+         }
+     }
+     Ok(files)
 
-fn main() -> Result<()> {
-    run()
-}
 ```
 
-### 2. Add New Integration Tests
+### 2. Add New Integration Tests for Advanced Logic
 
-Now, I'll add the new tests for I/O errors and special characters to the integration test file.
+Since `rdump/tests/advanced_logic.rs` is a new file, here is its complete content. It uses the `insane_test_bed` files you provided to cover the previously missing test scenarios.
 
-File: `rdump/tests/search_integration.rs` (Modified)
+---
+**File:** `rdump/tests/advanced_logic.rs` (New File)
 ```rust
-use anyhow::Result;
-use rdump::{commands::search::run_search, ColorChoice, Format, SearchArgs}; // run_search instead of perform_search
-use std::fs;
-use std::path::{Path, PathBuf};
-use tempfile::tempdir;
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::process::Command;
 
-/// Helper to create a default SearchArgs for testing.
-/// We enable `no_ignore` and `hidden` to make tests self-contained and predictable.
-fn create_test_args(root: &Path, query: &str) -> SearchArgs {
-    SearchArgs {
-        query: query.split(' ').map(String::from).collect(), // Split query for clap
-        root: root.to_path_buf(),
-        preset: vec![],
-        output: None,
-        line_numbers: false,
-        no_headers: false,
-        format: Format::Paths,
-        no_ignore: true, // Crucial for hermetic tests
-        hidden: true,    // Crucial for hermetic tests
-        color: ColorChoice::Never,
-        max_depth: None,
-        context: None,
-        find: false,
-    }
-}
+#[test]
+fn test_distinguishes_function_call_from_definition() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--format=hunks")
+        .arg("call:my_func & path:same_file_def_call.rs");
 
-/// Helper to run a search and return the relative paths of matching files.
-/// NOTE: This now uses `run_search` and captures stdout, as `perform_search` is not public.
-/// To make perform_search public, we'd need to adjust the `lib.rs` design.
-/// For these tests, we will create a custom test helper that calls the full `run_search`
-/// and returns the result, which is more of a true integration test.
-///
-/// Let's stick with the previous `perform_search` for simplicity and make it public.
-/// The `lib.rs` change makes this possible. Let's re-import it.
-use rdump::commands::search::perform_search;
-
-fn run_test_search(root: &Path, query: &str) -> Result<Vec<String>> {
-    let args = create_test_args(root, query);
-    let results = perform_search(&args)?;
-    let mut paths: Vec<String> = results
-        .into_iter()
-        .map(|(p, _)| {
-            p.strip_prefix(root)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/") // Normalize for Windows
-        })
-        .collect();
-    paths.sort();
-    Ok(paths)
-}
-
-/// Sets up a standard test project structure.
-fn setup_test_project() -> Result<tempfile::TempDir> {
-    let dir = tempdir()?;
-    let root = dir.path();
-
-    fs::create_dir_all(root.join("src"))?;
-    fs::create_dir_all(root.join("tests"))?;
-    fs::create_dir_all(root.join("benches"))?;
-    fs::create_dir_all(root.join("docs"))?;
-
-    fs::write(
-        root.join("src/user.rs"),
-        "// TODO: Add more fields\nstruct User {}",
-    )?;
-    fs::write(root.join("src/order.rs"), "struct Order {}")?;
-    fs::write(
-        root.join("src/special.txt"),
-        "the user's settings\nvalue * 2",
-    )?;
-    fs::write(root.join("tests/user_test.rs"), "fn test_user() {}")?;
-    fs::write(root.join("benches/user.rs"), "fn bench_user() {}")?;
-    fs::write(root.join("docs/api.md"), "# API Docs")?;
-
-    Ok(dir)
+    // The output should contain the CALL line but not the DEFINITION line.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("my_func();"))
+        .stdout(predicate::str::contains("fn my_func()").not());
 }
 
 #[test]
-fn test_query_with_negated_group() -> Result<()> {
-    let dir = setup_test_project()?;
-    let root = dir.path();
+fn test_and_combination_of_hunk_and_boolean_predicates() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--format=hunks")
+        .arg("struct:MyStruct & ext:rs & path:code.rs");
 
-    // Find all rust files that are NOT in the tests or benches directories.
-    let query = "ext:rs & !(in:tests | in:benches)";
-    let results = run_test_search(root, query)?;
-
-    assert_eq!(results.len(), 2);
-    assert_eq!(results, vec!["src/order.rs", "src/user.rs"]);
-    Ok(())
+    // The output should be just the struct hunk, not the whole file.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("struct MyStruct"))
+        .stdout(predicate::str::contains("fn my_func").not());
 }
 
 #[test]
-fn test_query_combining_semantic_and_content_predicates() -> Result<()> {
-    let dir = setup_test_project()?;
-    let root = dir.path();
+fn test_or_combination_with_negation() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--format=paths")
+        .arg("contains:foo | !contains:baz");
 
-    // Find a struct named 'User' that also has a 'TODO' comment.
-    let query = "struct:User & comment:TODO";
-    let results = run_test_search(root, query)?;
-    assert_eq!(results, vec!["src/user.rs"]);
-
-    // Find a struct named 'Order' that also has a 'TODO' comment (it doesn't).
-    let query_no_match = "struct:Order & comment:TODO";
-    let results_no_match = run_test_search(root, query_no_match)?;
-    assert!(results_no_match.is_empty());
-
-    Ok(())
+    // Should find logical1.rs (contains foo) and logical2.rs (does not contain baz),
+    // but not logical3.rs (because it contains baz).
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("logical1.rs"))
+        .stdout(predicate::str::contains("logical2.rs"))
+        .stdout(predicate::str::contains("logical3.rs").not());
 }
 
 #[test]
-fn test_query_combining_metadata_and_semantic_predicates() -> Result<()> {
-    let dir = setup_test_project()?;
-    let root = dir.path();
+fn test_graceful_failure_on_non_existent_root_path() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg(".")
+        .arg("--root")
+        .arg("/path/that/absolutely/does/not/exist");
 
-    // Find a struct named 'User' but only within the 'src' directory.
-    let query = "in:src & struct:User";
-    let results = run_test_search(root, query)?;
-    assert_eq!(results, vec!["src/user.rs"]);
-
-    // Search for a function inside the 'docs' directory (it won't find one).
-    let query_no_match = "in:docs & func:test_user";
-    let results_no_match = run_test_search(root, query_no_match)?;
-    assert!(results_no_match.is_empty());
-
-    Ok(())
+    // Should fail with a clear error message.
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "root path '/path/that/absolutely/does/not/exist' does not exist",
+        ));
 }
 
 #[test]
-#[cfg(unix)] // This test relies on Unix-style permissions and paths
-fn test_search_fails_on_unwritable_output_path() -> Result<()> {
-    let dir = setup_test_project()?;
-    let root = dir.path();
-    let unwritable_dir = root.join("unwritable");
-    fs::create_dir(&unwritable_dir)?;
+fn test_behavior_on_unknown_predicate() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    // Search for a predicate that doesn't exist.
+    cmd.arg("search").arg("nonexistent:predicate");
 
-    // Make directory read-only
-    let mut perms = fs::metadata(&unwritable_dir)?.permissions();
-    perms.set_readonly(true);
-    fs::set_permissions(&unwritable_dir, perms)?;
-
-    let output_path = unwritable_dir.join("output.txt");
-
-    let mut args = create_test_args(root, "ext:rs");
-    args.output = Some(output_path);
-
-    // Call the full `run_search` which attempts to create the file
-    let result = run_search(args);
-
-    assert!(result.is_err());
-    let error_message = result.unwrap_err().to_string();
-    assert!(
-        error_message.contains("Permission denied") || error_message.contains("os error 13"),
-        "Error message should indicate a permission issue"
-    );
-
-    // Set back to writable so tempdir can clean up
-    let mut perms = fs::metadata(&unwritable_dir)?.permissions();
-    perms.set_readonly(false);
-    fs::set_permissions(&unwritable_dir, perms)?;
-
-    Ok(())
-}
-
-#[test]
-fn test_query_with_literal_glob_character() -> Result<()> {
-    let dir = setup_test_project()?;
-    let root = dir.path();
-
-    // The single quotes in the RQL string are crucial
-    let query = "contains:'value * 2'";
-    let results = run_test_search(root, query)?;
-
-    assert_eq!(results, vec!["src/special.txt"]);
-    Ok(())
-}
-
-#[test]
-fn test_query_with_escaped_quote() -> Result<()> {
-    let dir = setup_test_project()?;
-    let root = dir.path();
-
-    // The query contains an escaped single quote inside a single-quoted string
-    let query = "contains:'user\\'s settings'";
-    let results = run_test_search(root, query)?;
-
-    assert_eq!(results, vec!["src/special.txt"]);
-    Ok(())
+    // The current behavior is to silently treat this as a "true" match for that predicate.
+    // Therefore, the command succeeds and finds all files. This test documents that behavior.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("code.rs"))
+        .stdout(predicate::str::contains("calls.rs"));
 }
 ```
-
-I had to make one final correction. `create_test_args` was joining the query parts with a space, but clap expects separate parts. I've adjusted it to split the string on spaces, which is more representative of how the shell passes arguments. I also added the new `special.txt` file to the test setup. The unwritable test is marked `cfg(unix)` as file permissions are not consistent on Windows.
