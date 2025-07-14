@@ -1,107 +1,3 @@
-As planned, I have created a more comprehensive test file for React and a corresponding integration test suite to validate `rdump`'s semantic search capabilities for React/TSX.
-
-I have added the following two files:
-
-*   `insane_test_bed/react_comprehensive.tsx`: This file contains a wide variety of React and JSX patterns, including class components, functional components with `React.memo`, multiple standard and custom hooks, and various JSX element and prop types.
-*   `rdump/tests/react_comprehensive_search.rs`: This new integration test suite specifically targets the `react_comprehensive.tsx` file. It includes numerous tests to verify the correctness of predicates like `component:`, `element:`, `hook:`, `customhook:`, and `prop:`. It also tests logical combinations and wildcard searches within a React context.
-
-Here are the contents of the newly created files:
-
-<br>
-
-**File: ./insane_test_bed/react_comprehensive.tsx**
-```rust
-import React, { useState, useEffect, useMemo, useCallback, useRef, useContext } from 'react';
-
-// For testing namespaced elements
-const SVG = {
-  Circle: 'circle',
-};
-
-// Test Context
-const ThemeContext = React.createContext('light');
-
-/**
- * A standard class component.
- * It's important to test these as well.
- */
-export class ClassComponent extends React.Component<{ title: string }> {
-  render() {
-    // A JSX comment
-    return <h1>{this.props.title}</h1>;
-  }
-}
-
-// A custom hook for a counter
-function useCounter(initialValue = 0) {
-  const [count, setCount] = useState(initialValue);
-  const increment = () => setCount(c => c + 1);
-  return { count, increment };
-}
-
-// Another custom hook with dependencies
-const useWindowWidth = () => {
-  const [width, setWidth] = useState(window.innerWidth);
-  useEffect(() => {
-    const handleResize = () => setWidth(window.innerWidth);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []); // Dependency array
-  return width;
-};
-
-// A functional component using React.memo
-export const MemoizedComponent = React.memo(function MemoizedComponent({ data }) {
-  const calculated = useMemo(() => {
-    // Some expensive calculation
-    return data.id * 2;
-  }, [data.id]);
-
-  return <p>Memoized: {calculated}</p>;
-});
-
-
-// The main comprehensive component for testing
-function ComprehensiveComponent(props) {
-  const { count, increment } = useCounter(10);
-  const width = useWindowWidth();
-  const inputRef = useRef<HTMLInputElement>(null);
-  const theme = useContext(ThemeContext);
-
-  const handleClick = useCallback(() => {
-    if (inputRef.current) {
-      inputRef.current.focus();
-    }
-    increment();
-  }, [increment]);
-
-  return (
-    <div className={`theme-${theme}`} style={{ border: '1px solid black' }}>
-      <ClassComponent title="Class Component Title" />
-      <MemoizedComponent data={{ id: 5 }} />
-      <section>
-        <label htmlFor="test-input">Focus Test</label>
-        <input ref={inputRef} id="test-input" type="text" />
-      </section>
-      <button onClick={handleClick} disabled={false}>
-        Increment and Focus
-      </button>
-      <span>Width: {width}</span>
-      <p>Current Count: {count}</p>
-      <svg width="100" height="100">
-        <SVG.Circle cx="50" cy="50" r="40" stroke="green" fill="yellow" />
-      </svg>
-    </div>
-  );
-}
-
-export default ComprehensiveComponent;
-```
-
-<br>
-
-**File: ./rdump/tests/react_comprehensive_search.rs**
-```rust
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
 use std::process::Command;
@@ -276,7 +172,7 @@ fn test_find_jsx_comment() {
         .arg("comment:\"A JSX comment\"")
         .assert()
         .success()
-        .stdout(predicate::str::contains("<h1>{this.props.title}</h1>"));
+        .stdout(predicate::str::contains("// A JSX comment"));
 }
 
 #[test]
@@ -288,4 +184,3 @@ fn test_find_prop_with_boolean_value() {
         .success()
         .stdout(predicate::str::contains("disabled={false}"));
 }
-```

@@ -18,6 +18,30 @@ pub(super) fn create_react_profile() -> LanguageProfile {
                     value: (arrow_function)
                 )
             )
+            (export_statement
+                declaration: (lexical_declaration
+                    (variable_declarator
+                        name: (identifier) @match
+                        value: (call_expression
+                            function: (member_expression
+                                property: (property_identifier) @_prop
+                            )
+                            (#eq? @_prop \"memo\")
+                        )
+                    )
+                )
+            )
+            (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (call_expression
+                        function: (member_expression
+                            property: (property_identifier) @_prop
+                        )
+                        (#eq? @_prop \"memo\")
+                    )
+                )
+            )
         ]
     ";
     let element_query = "
