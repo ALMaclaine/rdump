@@ -74,7 +74,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 pub fn perform_search(args: &SearchArgs) -> Result<Vec<(PathBuf, Vec<Range>)>> {
     // --- Load Config and Build Query ---
     let config = config::load_config()?;
-    let mut final_query = args.query.join(" ");
+    let mut final_query = args.query.clone();
 
     for preset_name in args.preset.iter().rev() {
         let preset_query = config
