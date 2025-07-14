@@ -30,22 +30,24 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
     let matching_files = perform_search(&args)?;
 
     // --- Determine if color should be used ---
-    let mut use_color = match args.color {
-        ColorChoice::Always => true,
-        ColorChoice::Never => false,
-        ColorChoice::Auto => atty::is(Stream::Stdout),
+    let use_color = if args.output.is_some() {
+        // If outputting to a file, never use color unless explicitly forced.
+        args.color == ColorChoice::Always
+    } else {
+        // Otherwise, decide based on the color choice and TTY status.
+        match args.color {
+            ColorChoice::Always => true,
+            ColorChoice::Never => false,
+            ColorChoice::Auto => atty::is(Stream::Stdout),
+        }
     };
-
-    // If outputting to a file, disable color unless explicitly forced.
-    if args.output.is_some() && args.color != ColorChoice::Always {
-        use_color = false;
-    }
 
     // If the output format is `Cat` (likely for piping), we should not use color
     // unless the user has explicitly forced it with `Always`.
     if let crate::Format::Cat = args.format {
         if args.color != ColorChoice::Always {
-            use_color = false;
+            // This is a bit redundant with the above, but it's a safeguard.
+            // use_color = false;
         }
     }
 
@@ -329,5 +331,92 @@ mod tests {
         assert!(files.contains(&"app.js".to_string()));
         let expected_path = PathBuf::from("node_modules").join("some_dep.js");
         assert!(files.contains(&expected_path.to_string_lossy().to_string()));
+    }
+
+    #[test]
+    fn test_output_to_file_disables_color() {
+        // Setup: Create a temporary directory and a file to search
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let file_path = root.join("test.rs");
+        let mut file = fs::File::create(&file_path).unwrap();
+        writeln!(file, "fn main() {{}}").unwrap();
+
+        // Args: Simulate running `rdump search 'ext:rs' --output dump.txt`
+        let output_file = dir.path().join("dump.txt");
+        let args = SearchArgs {
+            query: Some("ext:rs".to_string()),
+            root: root.clone(),
+            output: Some(output_file.clone()),
+            color: ColorChoice::Auto, // This is the default
+            // Other fields can be default
+            preset: vec![],
+            line_numbers: false,
+            no_headers: false,
+            format: crate::Format::Hunks,
+            no_ignore: false,
+            hidden: false,
+            max_depth: None,
+            context: Some(0),
+            find: false,
+        };
+
+        // Run the search part of the command
+        run_search(args).unwrap();
+
+        // Verify: Read the output file and check for ANSI codes
+        let output_content = fs::read_to_string(output_file).unwrap();
+        assert!(
+            !output_content.contains('\x1b'),
+            "Output file should not contain ANSI color codes"
+        );
+    }
+
+    #[test]
+    fn test_output_to_file_with_color_never() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let file_path = root.join("test.rs");
+        fs::write(&file_path, "fn main() {}").unwrap();
+
+        let output_file = dir.path().join("dump.txt");
+        let args = SearchArgs {
+            query: Some("ext:rs".to_string()),
+            root: root.clone(),
+            output: Some(output_file.clone()),
+            color: ColorChoice::Never,
+            ..Default::default()
+        };
+
+        run_search(args).unwrap();
+
+        let output_content = fs::read_to_string(output_file).unwrap();
+        assert!(!output_content.contains('\x1b'));
+    }
+
+    #[test]
+    fn test_output_to_file_with_color_always() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let file_path = root.join("test.rs");
+        fs::write(&file_path, "fn main() {}").unwrap();
+
+        let output_file = dir.path().join("dump.txt");
+        let args = SearchArgs {
+            query: Some("ext:rs".to_string()),
+            root: root.clone(),
+            output: Some(output_file.clone()),
+            color: ColorChoice::Always,
+            format: crate::Format::Cat, // Use a format that supports color
+            ..Default::default()
+        };
+
+        run_search(args).unwrap();
+
+        let output_content = fs::read_to_string(output_file).unwrap();
+        assert!(
+            output_content.contains('\x1b'),
+            "Output file should contain ANSI color codes when color=always"
+        );
     }
 }

@@ -46,7 +46,7 @@ pub enum ColorChoice {
     Never,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 pub struct SearchArgs {
     /// The query string to search for, using rdump Query Language (RQL).
     ///
@@ -164,9 +164,10 @@ pub enum PresetAction {
     },
 }
 
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, ValueEnum, Default, PartialEq)]
 pub enum Format {
     /// Show only the specific code blocks ("hunks") that match a semantic query
+    #[default]
     Hunks,
     /// Human-readable markdown with file headers
     Markdown,
