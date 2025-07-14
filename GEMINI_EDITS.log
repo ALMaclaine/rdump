@@ -40,3 +40,10 @@ Description: Implemented several new test cases and a bug fix from changes.txt.
 - Added a new test file `rdump/tests/filesystem_edge_cases.rs` to handle symlinks and invalid UTF-8 files.
 - Modified `rdump/src/predicates/name.rs` to gracefully handle empty glob patterns.
 - Fixed failing tests by correcting the path to the test directory and adjusting a test assertion to match application behavior.
+
+Date: 2025-07-13
+Description: Polished the codebase by fixing an incorrect test case, refining language profiles to reduce duplication, and implementing a more robust query for detecting custom React hooks.
+- Corrected `rust_search.rs` test to properly assert that `func:new` finds definitions in both `main.rs` and `lib.rs`.
+- Removed redundant "tsx" entry from the `LANGUAGE_PROFILES` map in `rdump/src/predicates/code_aware/profiles/mod.rs`.
+- Centralized React hook queries (`hook` and `customhook`) into the JavaScript and TypeScript profiles.
+- Improved the tree-sitter query for `customhook` to correctly identify hook definitions, including those using `export` and `export default`.

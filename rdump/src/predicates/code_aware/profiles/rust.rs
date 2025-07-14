@@ -27,7 +27,12 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     // Query for standalone functions and methods in traits or impls.
     queries.insert(
         PredicateKey::Func,
-        "\n        [\n            (function_item name: (identifier) @match)\n            (function_signature_item name: (identifier) @match)\n        ]\n        "
+        "
+        [
+            (function_item name: (identifier) @match)
+            (function_signature_item name: (identifier) @match)
+        ]
+        "
         .to_string(),
     );
     // Query for the entire `use` declaration. We will match against its text content.

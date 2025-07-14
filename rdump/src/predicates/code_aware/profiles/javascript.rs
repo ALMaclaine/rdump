@@ -32,6 +32,36 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
         "[(string) @match (template_string) @match]".to_string(),
     );
 
+    // --- React Hook Queries ---
+    let hook_query = "
+        (call_expression
+            function: (identifier) @match
+            (#match? @match \"^(use)\")
+        )
+    ";
+    let custom_hook_query = r#"
+[
+  (function_declaration
+    name: (identifier) @match)
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @match
+      value: (arrow_function)))
+  (export_statement
+    declaration: [
+      (function_declaration
+        name: (identifier) @match)
+      (lexical_declaration
+        (variable_declarator
+          name: (identifier) @match
+          value: (arrow_function)))
+    ])
+]
+(#match? @match "^use[A-Z]")
+"#;
+    queries.insert(PredicateKey::Hook, hook_query.to_string());
+    queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
+
     LanguageProfile {
         name: "JavaScript",
         extensions: vec!["js"],
