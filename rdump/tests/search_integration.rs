@@ -8,7 +8,7 @@ use tempfile::tempdir;
 /// We enable `no_ignore` and `hidden` to make tests self-contained and predictable.
 fn create_test_args(root: &Path, query: &str) -> SearchArgs {
     SearchArgs {
-        query: query.split(' ').map(String::from).collect(), // Split query for clap
+        query: Some(query.to_string()), // The query is a single string
         root: root.to_path_buf(),
         preset: vec![],
         output: None,

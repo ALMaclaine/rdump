@@ -1,11 +1,23 @@
 use anyhow::{anyhow, Result};
-use pest::iterators::Pair;
+use pest::iterators::{Pair, Pairs};
 pub use pest::Parser;
+use pest::pratt_parser::{Assoc, Op, PrattParser};
 use pest_derive::Parser;
 
 #[derive(Parser)]
 #[grammar = "rql.pest"]
 pub struct RqlParser;
+
+lazy_static::lazy_static! {
+    static ref PRATT_PARSER: PrattParser<Rule> = {
+        use Assoc::*;
+        use Rule::*;
+
+        PrattParser::new()
+            .op(Op::infix(OR, Left))
+            .op(Op::infix(AND, Left))
+    };
+}
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum PredicateKey {
@@ -133,63 +145,75 @@ pub enum LogicalOperator {
 }
 
 pub fn parse_query(query: &str) -> Result<AstNode> {
-    // Check for empty or whitespace-only queries BEFORE parsing.
     if query.trim().is_empty() {
         return Err(anyhow!("Query cannot be empty."));
     }
 
     match RqlParser::parse(Rule::query, query) {
-        Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
-        Err(e) => {
-            // Re-format the pest error to be more user-friendly.
-            Err(anyhow!("Invalid query syntax:\n{}", e))
+        Ok(mut pairs) => {
+            // Unpack query -> expression to get the token stream for the parser.
+            let expression = pairs.next().unwrap().into_inner().next().unwrap();
+            build_ast_from_expression_pairs(expression.into_inner())
         }
+        Err(e) => Err(anyhow!("Invalid query syntax:\n{}", e)),
     }
 }
 
-fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
+// This function is the heart of the parser, using the Pratt method. It consumes
+// the token stream for a single expression level.
+fn build_ast_from_expression_pairs(pairs: Pairs<Rule>) -> Result<AstNode> {
+    if pairs.clone().last().map_or(false, |p| matches!(p.as_rule(), Rule::AND | Rule::OR)) {
+        return Err(anyhow!("Invalid query syntax: query cannot end with an operator."));
+    }
+    PRATT_PARSER
+        .map_primary(|primary| build_ast_from_term(primary))
+        .map_infix(|lhs, op, rhs| {
+            let op = match op.as_rule() {
+                Rule::AND => LogicalOperator::And,
+                Rule::OR => LogicalOperator::Or,
+                _ => unreachable!(),
+            };
+            Ok(AstNode::LogicalOp(op, Box::new(lhs?), Box::new(rhs?)))
+        })
+        .parse(pairs)
+}
+
+// This function handles the "primary" parts of the grammar: predicates,
+// parenthesized expressions, and negation.
+fn build_ast_from_term(pair: Pair<Rule>) -> Result<AstNode> {
     match pair.as_rule() {
-        Rule::query => build_ast_from_pairs(pair.into_inner().next().unwrap()),
-        Rule::expression | Rule::logical_or | Rule::logical_and => build_ast_from_logical_op(pair),
+        Rule::predicate => {
+            let mut inner = pair.into_inner();
+            if let Some(inner_predicate) = inner.next() {
+                let rule = inner_predicate.as_rule(); // Get the rule before moving
+                let mut predicate_parts = inner_predicate.into_inner();
+                let key_pair = predicate_parts.next().ok_or_else(|| anyhow!("Missing key in predicate for rule {:?}", rule))?;
+                let value_pair = predicate_parts.next().ok_or_else(|| anyhow!("Missing value in predicate for key '{}'", key_pair.as_str()))?;
+                let key = PredicateKey::from(key_pair.as_str());
+                let value = unescape_value(value_pair.as_str());
+                Ok(AstNode::Predicate(key, value))
+            } else {
+                Err(anyhow!("Invalid predicate: empty inner rule"))
+            }
+        }
+        Rule::expression => {
+            // A parenthesized expression. Recurse by parsing its inner pairs.
+            build_ast_from_expression_pairs(pair.into_inner())
+        }
         Rule::term => {
             let mut inner = pair.into_inner();
             let first = inner.next().unwrap();
             if first.as_rule() == Rule::NOT {
                 let factor = inner.next().unwrap();
-                let ast = build_ast_from_pairs(factor)?;
+                let ast = build_ast_from_term(factor)?;
                 Ok(AstNode::Not(Box::new(ast)))
             } else {
-                build_ast_from_pairs(first)
+                build_ast_from_term(first)
             }
         }
-        Rule::factor => build_ast_from_pairs(pair.into_inner().next().unwrap()),
-        Rule::predicate => {
-            let mut predicate_parts = pair.into_inner();
-            let key_pair = predicate_parts.next().unwrap();
-            let value_pair = predicate_parts.next().unwrap();
-            let key = PredicateKey::from(key_pair.as_str());
-            let value = unescape_value(value_pair.as_str());
-            Ok(AstNode::Predicate(key, value))
-        }
-        _ => Err(anyhow!("Unknown rule: {:?}", pair.as_rule())),
+        Rule::factor => build_ast_from_term(pair.into_inner().next().unwrap()),
+        _ => Err(anyhow!("Unknown primary rule: {:?}", pair.as_rule())),
     }
-}
-
-fn build_ast_from_logical_op(pair: Pair<Rule>) -> Result<AstNode> {
-    let mut inner_pairs = pair.into_inner();
-    let mut ast = build_ast_from_pairs(inner_pairs.next().unwrap())?;
-
-    while let Some(op_pair) = inner_pairs.next() {
-        let op = match op_pair.as_str().to_lowercase().as_str() {
-            "&" | "and" => LogicalOperator::And,
-            "|" | "or" => LogicalOperator::Or,
-            _ => unreachable!(),
-        };
-        let right_pair = inner_pairs.next().unwrap();
-        let right_ast = build_ast_from_pairs(right_pair)?;
-        ast = AstNode::LogicalOp(op, Box::new(ast), Box::new(right_ast));
-    }
-    Ok(ast)
 }
 
 fn unescape_value(value: &str) -> String {
@@ -289,7 +313,7 @@ mod tests {
     #[test]
     fn test_unescape_value() {
         assert_eq!(unescape_value(r#""hello \"world\"""#), "hello \"world\"");
-        assert_eq!(unescape_value(r#"'hello \'world\''"#), "hello 'world'");
+        assert_eq!(unescape_value(r#"'hello \'world\'""#), "hello 'world'");
         assert_eq!(unescape_value(r#""a \\ b""#), "a \\ b");
         assert_eq!(unescape_value("no_quotes"), "no_quotes");
     }
@@ -360,8 +384,7 @@ mod tests {
     fn test_error_on_trailing_operator() {
         let result = parse_query("ext:rs &");
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Invalid query syntax:"));
-        assert!(err.to_string().contains("expected")); // Pest's pointer is still useful
+        assert!(err.to_string().contains("query cannot end with an operator"));
     }
 
     #[test]

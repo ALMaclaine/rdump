@@ -9,17 +9,14 @@ fn rdump_search() -> Command {
     cmd.arg("search")
         .arg("--root")
         .arg("../insane_test_bed")
-        .arg("--format=hunks")
-        // Always target the specific test file to keep tests focused
-        .arg("path:react_comprehensive.tsx");
+        .arg("--format=hunks");
     cmd
 }
 
 #[test]
 fn test_finds_class_component() {
     rdump_search()
-        .arg("&")
-        .arg("component:ClassComponent")
+        .arg("path:react_comprehensive.tsx & component:ClassComponent")
         .assert()
         .success()
         .stdout(predicate::str::contains("export class ClassComponent"));
@@ -28,8 +25,7 @@ fn test_finds_class_component() {
 #[test]
 fn test_finds_memoized_component() {
     rdump_search()
-        .arg("&")
-        .arg("component:MemoizedComponent")
+        .arg("path:react_comprehensive.tsx & component:MemoizedComponent")
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -40,7 +36,7 @@ fn test_finds_memoized_component() {
 #[test]
 fn test_finds_all_custom_hook_definitions() {
     let mut cmd = rdump_search();
-    cmd.arg("&").arg("customhook:."); // Wildcard match
+    cmd.arg("path:react_comprehensive.tsx & customhook:."); // Wildcard match
     let output = cmd.output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
 
@@ -53,8 +49,7 @@ fn test_finds_all_custom_hook_definitions() {
 #[test]
 fn test_finds_specific_custom_hook_definition() {
     rdump_search()
-        .arg("&")
-        .arg("customhook:useWindowWidth")
+        .arg("path:react_comprehensive.tsx & customhook:useWindowWidth")
         .assert()
         .success()
         .stdout(predicate::str::contains("const useWindowWidth = () =>"))
@@ -64,7 +59,7 @@ fn test_finds_specific_custom_hook_definition() {
 #[test]
 fn test_finds_all_hook_calls() {
     let mut cmd = rdump_search();
-    cmd.arg("&").arg("hook:."); // Wildcard match
+    cmd.arg("path:react_comprehensive.tsx & hook:."); // Wildcard match
     let output = cmd.output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
 
@@ -83,8 +78,7 @@ fn test_finds_all_hook_calls() {
 #[test]
 fn test_finds_specific_built_in_hook_call() {
     rdump_search()
-        .arg("&")
-        .arg("hook:useEffect")
+        .arg("path:react_comprehensive.tsx & hook:useEffect")
         .assert()
         .success()
         .stdout(predicate::str::contains("useEffect(() => {"));
@@ -93,8 +87,7 @@ fn test_finds_specific_built_in_hook_call() {
 #[test]
 fn test_finds_jsx_element_and_prop() {
     rdump_search()
-        .arg("&")
-        .arg("element:input & prop:id")
+        .arg("path:react_comprehensive.tsx & element:input & prop:id")
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -105,8 +98,7 @@ fn test_finds_jsx_element_and_prop() {
 #[test]
 fn test_finds_custom_component_element() {
     rdump_search()
-        .arg("&")
-        .arg("element:ClassComponent")
+        .arg("path:react_comprehensive.tsx & element:ClassComponent")
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -122,8 +114,7 @@ fn test_finds_namespaced_svg_element() {
     // If it's a member expression, a more complex query might be needed,
     // but the current implementation handles identifiers well.
     rdump_search()
-        .arg("&")
-        .arg("element:SVG.Circle")
+        .arg("path:react_comprehensive.tsx & element:SVG.Circle")
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -152,8 +143,7 @@ fn test_negation_of_react_predicate() {
 fn test_find_component_with_specific_hook() {
     // Find a component that uses the `useMemo` hook.
     rdump_search()
-        .arg("&")
-        .arg("component:MemoizedComponent & hook:useMemo")
+        .arg("path:react_comprehensive.tsx & component:MemoizedComponent & hook:useMemo")
         .assert()
         .success()
         // The output should contain the whole component definition because both predicates match the file
@@ -168,8 +158,7 @@ fn test_find_jsx_comment() {
     // This tests if the `comment` predicate is correctly configured for JSX contexts.
     // TSX grammar does not have a dedicated `jsx_comment` node, it's just `comment`.
     rdump_search()
-        .arg("&")
-        .arg("comment:\"A JSX comment\"")
+        .arg("path:react_comprehensive.tsx & comment:\"A JSX comment\"")
         .assert()
         .success()
         .stdout(predicate::str::contains("// A JSX comment"));
@@ -178,8 +167,7 @@ fn test_find_jsx_comment() {
 #[test]
 fn test_find_prop_with_boolean_value() {
     rdump_search()
-        .arg("&")
-        .arg("element:button & prop:disabled")
+        .arg("path:react_comprehensive.tsx & element:button & prop:disabled")
         .assert()
         .success()
         .stdout(predicate::str::contains("disabled={false}"));

@@ -92,7 +92,7 @@ pub struct SearchArgs {
     ///   customhook:<str>   - A custom hook definition (e.g., `useAuth`)
     ///   prop:<str>         - A prop being passed to a JSX element
     #[arg(verbatim_doc_comment, name = "QUERY")]
-    pub query: String,
+    pub query: Option<String>,
     #[arg(long, short)]
     pub preset: Vec<String>,
     #[arg(short, long, default_value = ".")]

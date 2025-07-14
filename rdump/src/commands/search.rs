@@ -74,25 +74,34 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 pub fn perform_search(args: &SearchArgs) -> Result<Vec<(PathBuf, Vec<Range>)>> {
     // --- Load Config and Build Query ---
     let config = config::load_config()?;
-    let mut final_query = args.query.clone();
+    let mut final_query: Option<String> = args.query.clone();
 
-    for preset_name in args.preset.iter().rev() {
-        let preset_query = config
-            .presets
-            .get(preset_name)
-            .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
+    // If presets are specified, prepend them to the query.
+    if !args.preset.is_empty() {
+        let mut preset_queries = Vec::new();
+        for preset_name in &args.preset {
+            let preset_query = config
+                .presets
+                .get(preset_name)
+                .ok_or_else(|| anyhow!("Preset '{}' not found", preset_name))?;
+            preset_queries.push(format!("({})", preset_query));
+        }
+        let all_presets = preset_queries.join(" & ");
 
-        if final_query.is_empty() {
-            final_query = format!("({preset_query})");
+        if let Some(q) = final_query {
+            final_query = Some(format!("({}) & ({})", all_presets, q));
         } else {
-            final_query = format!("({preset_query}) & ({final_query})");
+            final_query = Some(all_presets);
         }
     }
 
-    if final_query.is_empty() {
-        return Err(anyhow!(
-            "Empty query. Provide a query string or use a preset."
-        ));
+    // Ensure we have a query to run.
+    let query_to_parse = final_query.ok_or_else(|| {
+        anyhow!("No query provided. Please provide a query or use a preset.")
+    })?;
+
+    if query_to_parse.trim().is_empty() {
+        return Err(anyhow!("Empty query."));
     }
 
     // --- 1. Find initial candidates ---
@@ -104,7 +113,7 @@ pub fn perform_search(args: &SearchArgs) -> Result<Vec<(PathBuf, Vec<Range>)>> {
     )?;
 
     // --- 2. Parse query ---
-    let ast = parser::parse_query(&final_query)?;
+    let ast = parser::parse_query(&query_to_parse)?;
 
     // --- 3. Pre-filtering Pass (Metadata) ---
     // This pass uses an evaluator with only fast metadata predicates.

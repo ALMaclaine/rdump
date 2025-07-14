@@ -12,18 +12,10 @@ query = { SOI ~ expression ~ EOI }
 // --- Expression and Operator Precedence ---
 // An expression is a series of terms connected by logical operators.
 // The grammar enforces standard logical precedence: NOT > AND > OR.
-expression = { logical_or }
-
-// `logical_or` has the lowest precedence. It's a series of `logical_and`
-// terms separated by the OR operator.
-logical_or = { logical_and ~ (OR ~ logical_and)* }
-
-// `logical_and` has higher precedence than OR. It's a series of `term`s
-// separated by the AND operator.
-logical_and = { term ~ (AND ~ term)* }
+expression = { (term | AND | OR)+ }
 
 // --- Terms and Factors ---
-// A `term` is the basic building block of an expression. It can be a simple
+// A `term` is the basic building block of an an expression. It can be a simple
 // factor or a factor negated with NOT. The NOT operator has the highest precedence.
 term = { NOT? ~ factor }
 
@@ -34,7 +26,10 @@ factor = { predicate | "(" ~ expression ~ ")" }
 // --- Predicates and Values ---
 // A `predicate` is the core of the query, representing a key-value filter.
 // It consists of an identifier (the key), a colon, and a value.
-predicate = { identifier ~ ":" ~ value }
+predicate = { generic_predicate }
+
+generic_predicate = { identifier ~ ":" ~ value }
+
 
 // An `identifier` is the key for a predicate (e.g., "ext", "name", "contains").
 // It must consist of one or more alphanumeric characters.

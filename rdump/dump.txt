@@ -416,7 +416,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
 pub fn perform_search(args: &SearchArgs) -> Result<Vec<(PathBuf, Vec<Range>)>> {
     // --- Load Config and Build Query ---
     let config = config::load_config()?;
-    let mut final_query = args.query.join(" ");
+    let mut final_query = args.query.clone();
 
     for preset_name in args.preset.iter().rev() {
         let preset_query = config
@@ -1734,12 +1734,21 @@ pub struct SearchArgs {
     ///   interface:<str>    - An interface definition
     ///   trait:<str>        - A trait definition
     ///   type:<str>         - A type alias
+    ///   impl:<str>         - An implementation block (e.g., `impl User`)
+    ///   macro:<str>        - A macro definition
     ///
     /// SYNTACTIC CONTENT:
     ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
     ///   str:<str>          - Text inside a string literal
-    #[arg(verbatim_doc_comment, name = "QUERY_PARTS")]
-    pub query: Vec<String>,
+    ///
+    #[doc = "REACT-SPECIFIC PREDICATES (.jsx, .tsx):"]
+    ///   component:<str>    - A React component definition
+    ///   element:<str>      - A JSX element/tag (e.g., `div`, `MyComponent`)
+    ///   hook:<str>         - A React hook call (e.g., `useState`, `useEffect`)
+    ///   customhook:<str>   - A custom hook definition (e.g., `useAuth`)
+    ///   prop:<str>         - A prop being passed to a JSX element
+    #[arg(verbatim_doc_comment, name = "QUERY")]
+    pub query: String,
     #[arg(long, short)]
     pub preset: Vec<String>,
     #[arg(short, long, default_value = ".")]
@@ -1858,13 +1867,25 @@ fn main() -> Result<()> {
 File: ./src/parser.rs
 ---
 use anyhow::{anyhow, Result};
-use pest::iterators::Pair;
-use pest::Parser;
+use pest::iterators::{Pair, Pairs};
+pub use pest::Parser;
+use pest::pratt_parser::{Assoc, Op, PrattParser};
 use pest_derive::Parser;
 
 #[derive(Parser)]
 #[grammar = "rql.pest"]
 pub struct RqlParser;
+
+lazy_static::lazy_static! {
+    static ref PRATT_PARSER: PrattParser<Rule> = {
+        use Assoc::*;
+        use Rule::*;
+
+        PrattParser::new()
+            .op(Op::infix(OR, Left))
+            .op(Op::infix(AND, Left))
+    };
+}
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum PredicateKey {
@@ -1888,11 +1909,19 @@ pub enum PredicateKey {
     Interface,
     Trait,
     Type,
+    Impl,
+    Macro,
     // Syntactic Content
     Comment,
     Str,
     // Usage
     Call,
+    // --- React-specific Predicates ---
+    Component,
+    Element,
+    Hook,
+    CustomHook,
+    Prop,
     // A key for testing or unknown predicates
     Other(String),
 }
@@ -1917,9 +1946,16 @@ impl AsRef<str> for PredicateKey {
             PredicateKey::Interface => "interface",
             PredicateKey::Trait => "trait",
             PredicateKey::Type => "type",
+            PredicateKey::Impl => "impl",
+            PredicateKey::Macro => "macro",
             PredicateKey::Comment => "comment",
             PredicateKey::Str => "str",
             PredicateKey::Call => "call",
+            PredicateKey::Component => "component",
+            PredicateKey::Element => "element",
+            PredicateKey::Hook => "hook",
+            PredicateKey::CustomHook => "customhook",
+            PredicateKey::Prop => "prop",
             PredicateKey::Other(s) => s.as_str(),
         }
     }
@@ -1946,9 +1982,17 @@ impl From<&str> for PredicateKey {
             "interface" => Self::Interface,
             "trait" => Self::Trait,
             "type" => Self::Type,
+            "impl" => Self::Impl,
+            "macro" => Self::Macro,
             "comment" => Self::Comment,
             "str" => Self::Str,
             "call" => Self::Call,
+            // --- REACT ---
+            "component" => Self::Component,
+            "element" => Self::Element,
+            "hook" => Self::Hook,
+            "customhook" => Self::CustomHook,
+            "prop" => Self::Prop,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
@@ -1969,64 +2013,73 @@ pub enum LogicalOperator {
 }
 
 pub fn parse_query(query: &str) -> Result<AstNode> {
-    // Check for empty or whitespace-only queries BEFORE parsing.
     if query.trim().is_empty() {
         return Err(anyhow!("Query cannot be empty."));
     }
 
     match RqlParser::parse(Rule::query, query) {
-        Ok(pairs) => build_ast_from_pairs(pairs.peek().unwrap()),
-        Err(e) => {
-            // Re-format the pest error to be more user-friendly.
-            Err(anyhow!("Invalid query syntax:\n{}", e))
+        Ok(mut pairs) => {
+            // Get the first and only pair, which is the `query` rule.
+            let query_pair = pairs.next().unwrap();
+            // The `query` rule contains an `expression`.
+            let expression_pairs = query_pair.into_inner();
+            // Start the AST build from the expression.
+            build_ast_from_expression(expression_pairs)
         }
+        Err(e) => Err(anyhow!("Invalid query syntax:\n{}", e)),
     }
 }
 
-fn build_ast_from_pairs(pair: Pair<Rule>) -> Result<AstNode> {
+// Pratt parser logic lives here. It consumes an expression.
+fn build_ast_from_expression(pairs: Pairs<Rule>) -> Result<AstNode> {
+    PRATT_PARSER
+        .map_primary(|primary| build_ast_from_term(primary))
+        .map_infix(|lhs, op, rhs| {
+            let op = match op.as_rule() {
+                Rule::AND => LogicalOperator::And,
+                Rule::OR => LogicalOperator::Or,
+                _ => unreachable!(),
+            };
+            Ok(AstNode::LogicalOp(op, Box::new(lhs?), Box::new(rhs?)))
+        })
+        .parse(pairs)
+}
+
+// This function handles the "leaves" or primary parts of our grammar.
+fn build_ast_from_term(pair: Pair<Rule>) -> Result<AstNode> {
     match pair.as_rule() {
-        Rule::query => build_ast_from_pairs(pair.into_inner().next().unwrap()),
-        Rule::expression | Rule::logical_or | Rule::logical_and => build_ast_from_logical_op(pair),
-        Rule::term => {
-            let mut inner = pair.into_inner();
-            let first = inner.next().unwrap();
-            if first.as_rule() == Rule::NOT {
-                let factor = inner.next().unwrap();
-                let ast = build_ast_from_pairs(factor)?;
-                Ok(AstNode::Not(Box::new(ast)))
-            } else {
-                build_ast_from_pairs(first)
-            }
-        }
-        Rule::factor => build_ast_from_pairs(pair.into_inner().next().unwrap()),
         Rule::predicate => {
-            let mut predicate_parts = pair.into_inner();
-            let key_pair = predicate_parts.next().unwrap();
-            let value_pair = predicate_parts.next().unwrap();
-            let key = PredicateKey::from(key_pair.as_str());
-            let value = unescape_value(value_pair.as_str());
+            // A simple predicate like `key:value`.
+            let mut inner = pair.into_inner().next().unwrap().into_inner();
+            let key = PredicateKey::from(inner.next().unwrap().as_str());
+            let value = unescape_value(inner.next().unwrap().as_str());
             Ok(AstNode::Predicate(key, value))
         }
-        _ => Err(anyhow!("Unknown rule: {:?}", pair.as_rule())),
+        Rule::expression => {
+            // A parenthesized expression, like `(a | b)`. Recurse.
+            build_ast_from_expression(pair.into_inner())
+        }
+        Rule::term => {
+            // A term can be negated. Handle the `NOT` operator here.
+            let mut inner = pair.into_inner();
+            let first_child = inner.next().unwrap();
+            if first_child.as_rule() == Rule::NOT {
+                let negated_term = inner.next().unwrap();
+                let ast = build_ast_from_term(negated_term)?;
+                Ok(AstNode::Not(Box::new(ast)))
+            } else {
+                // Not negated, just a regular term. Descend.
+                build_ast_from_term(first_child)
+            }
+        }
+        Rule::factor => {
+            // A factor is a container for a predicate or a parenthesized expression. Descend.
+            build_ast_from_term(pair.into_inner().next().unwrap())
+        }
+        _ => Err(anyhow!("Unknown term rule: {:?}", pair.as_rule())),
     }
 }
 
-fn build_ast_from_logical_op(pair: Pair<Rule>) -> Result<AstNode> {
-    let mut inner_pairs = pair.into_inner();
-    let mut ast = build_ast_from_pairs(inner_pairs.next().unwrap())?;
-
-    while let Some(op_pair) = inner_pairs.next() {
-        let op = match op_pair.as_str().to_lowercase().as_str() {
-            "&" | "and" => LogicalOperator::And,
-            "|" | "or" => LogicalOperator::Or,
-            _ => unreachable!(),
-        };
-        let right_pair = inner_pairs.next().unwrap();
-        let right_ast = build_ast_from_pairs(right_pair)?;
-        ast = AstNode::LogicalOp(op, Box::new(ast), Box::new(right_ast));
-    }
-    Ok(ast)
-}
 
 fn unescape_value(value: &str) -> String {
     let quote_char = value.chars().next();
@@ -2169,6 +2222,26 @@ mod tests {
         assert_eq!(
             parse_query("call:my_func").unwrap(),
             *predicate(PredicateKey::Call, "my_func")
+        );
+    }
+
+    #[test]
+    fn test_parse_react_and_new_rust_predicates() {
+        assert_eq!(
+            parse_query("component:App").unwrap(),
+            *predicate(PredicateKey::Component, "App")
+        );
+        assert_eq!(
+            parse_query("hook:useState").unwrap(),
+            *predicate(PredicateKey::Hook, "useState")
+        );
+        assert_eq!(
+            parse_query("macro:my_macro").unwrap(),
+            *predicate(PredicateKey::Macro, "my_macro")
+        );
+        assert_eq!(
+            parse_query("impl:User").unwrap(),
+            *predicate(PredicateKey::Impl, "User")
         );
     }
 
@@ -2347,6 +2420,10 @@ impl PredicateEvaluator for CodeAwareEvaluator {
                     PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
                         captured_text.contains(value)
                     }
+                    // Hook predicates can match any hook (`hook:.`) or a specific one
+                    PredicateKey::Hook | PredicateKey::CustomHook => {
+                        value == "." || captured_text == value
+                    }
                     // Definition-based predicates require an exact match on the identifier, unless a wildcard is used.
                     _ => value == "." || captured_text == value,
                 };
@@ -2498,9 +2575,39 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
         "[(string) @match (template_string) @match]".to_string(),
     );
 
+    // --- React Hook Queries ---
+    let hook_query = "
+        (call_expression
+            function: (identifier) @match
+            (#match? @match \"^(use)\")
+        )
+    ";
+    let custom_hook_query = r#"
+[
+  (function_declaration
+    name: (identifier) @match)
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @match
+      value: (arrow_function)))
+  (export_statement
+    declaration: [
+      (function_declaration
+        name: (identifier) @match)
+      (lexical_declaration
+        (variable_declarator
+          name: (identifier) @match
+          value: (arrow_function)))
+    ])
+]
+(#match? @match "^use[A-Z]")
+"#;
+    queries.insert(PredicateKey::Hook, hook_query.to_string());
+    queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
+
     LanguageProfile {
         name: "JavaScript",
-        extensions: vec!["js", "jsx"],
+        extensions: vec!["js"],
         language,
         queries,
     }
@@ -2518,6 +2625,7 @@ mod go;
 mod java;
 mod javascript;
 mod python;
+mod react; // Add react module
 mod rust;
 mod typescript;
 
@@ -2538,6 +2646,7 @@ pub(super) static LANGUAGE_PROFILES: Lazy<HashMap<&'static str, LanguageProfile>
         m.insert("java", java::create_java_profile());
         m.insert("ts", typescript::create_typescript_profile());
         m.insert("js", javascript::create_javascript_profile());
+        m.insert("jsx", react::create_react_profile());
         m
     });
 
@@ -2605,6 +2714,118 @@ pub(super) fn create_python_profile() -> LanguageProfile {
 
 ---
 
+File: ./src/predicates/code_aware/profiles/react.rs
+---
+use super::LanguageProfile;
+use crate::parser::PredicateKey;
+use std::collections::HashMap;
+
+/// Creates the profile for the React (JSX/TSX).
+pub(super) fn create_react_profile() -> LanguageProfile {
+    let language = tree_sitter_typescript::language_tsx();
+    let mut queries = HashMap::new();
+
+    // --- Component & Element Queries ---
+    let component_query = "
+        [
+            (class_declaration name: (type_identifier) @match)
+            (function_declaration name: (identifier) @match)
+            (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (arrow_function)
+                )
+            )
+            (export_statement
+                declaration: (lexical_declaration
+                    (variable_declarator
+                        name: (identifier) @match
+                        value: (call_expression
+                            function: (member_expression
+                                property: (property_identifier) @_prop
+                            )
+                            (#eq? @_prop \"memo\")
+                        )
+                    )
+                )
+            )
+            (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (call_expression
+                        function: (member_expression
+                            property: (property_identifier) @_prop
+                        )
+                        (#eq? @_prop \"memo\")
+                    )
+                )
+            )
+        ]
+    ";
+    let element_query = "
+        [
+            (jsx_opening_element name: (_) @match)
+            (jsx_self_closing_element name: (_) @match)
+        ]
+    ";
+    queries.insert(PredicateKey::Component, component_query.to_string());
+    queries.insert(PredicateKey::Element, element_query.to_string());
+
+    // --- Hook Queries ---
+    let hook_query = "
+        (call_expression
+            function: (identifier) @match
+            (#match? @match \"^(use)\")
+        )
+    ";
+    let custom_hook_query = r#"
+[
+  (function_declaration
+    name: (identifier) @match)
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @match
+      value: (arrow_function)))
+  (export_statement
+    declaration: [
+      (function_declaration
+        name: (identifier) @match)
+      (lexical_declaration
+        (variable_declarator
+          name: (identifier) @match
+          value: (arrow_function)))
+    ])
+]
+(#match? @match "^use[A-Z]")
+"#;
+    queries.insert(PredicateKey::Hook, hook_query.to_string());
+    queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
+
+    // --- Prop Query ---
+    let prop_query = "(jsx_attribute (property_identifier) @match)";
+    queries.insert(PredicateKey::Prop, prop_query.to_string());
+
+    // --- Generic Queries (reusing from TS) ---
+    queries.insert(
+        PredicateKey::Import,
+        "(import_statement) @match".to_string(),
+    );
+    queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
+    queries.insert(
+        PredicateKey::Str,
+        "[(string) @match (template_string) @match]".to_string(),
+    );
+
+    LanguageProfile {
+        name: "React",
+        extensions: vec!["jsx", "tsx"],
+        language,
+        queries,
+    }
+}
+
+---
+
 File: ./src/predicates/code_aware/profiles/rust.rs
 ---
 use super::LanguageProfile;
@@ -2620,6 +2841,8 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     let enum_query = "(enum_item name: (_) @match)";
     let trait_query = "(trait_item name: (_) @match)";
     let type_query = "(type_item name: (type_identifier) @match)";
+    let impl_query = "(impl_item type: (type_identifier) @match)";
+    let macro_query = "(macro_definition name: (identifier) @match)";
 
     let def_query = [struct_query, enum_query, trait_query, type_query].join("\n");
 
@@ -2628,6 +2851,8 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
     queries.insert(PredicateKey::Enum, enum_query.to_string());
     queries.insert(PredicateKey::Trait, trait_query.to_string());
     queries.insert(PredicateKey::Type, type_query.to_string());
+    queries.insert(PredicateKey::Impl, impl_query.to_string());
+    queries.insert(PredicateKey::Macro, macro_query.to_string());
 
     // Query for standalone functions and methods in traits or impls.
     queries.insert(
@@ -2636,30 +2861,21 @@ pub(super) fn create_rust_profile() -> LanguageProfile {
         [
             (function_item name: (identifier) @match)
             (function_signature_item name: (identifier) @match)
-        ]"
+        ]
+        "
         .to_string(),
     );
     // Query for the entire `use` declaration. We will match against its text content.
     queries.insert(
         PredicateKey::Import,
-        "
-        (use_declaration) @match
-        "
+        "\n        (use_declaration) @match\n        "
         .to_string(),
     );
 
     // Query for function and method call sites.
     queries.insert(
         PredicateKey::Call,
-        "
-       (call_expression
-           function: [
-               (identifier) @match
-               (field_expression field: (field_identifier) @match)
-           ]
-       )
-       (macro_invocation macro: (identifier) @match)
-       "
+        "\n       (call_expression\n           function: [\n               (identifier) @match\n               (field_expression field: (field_identifier) @match)\n           ]\n       )\n       (macro_invocation macro: (identifier) @match)\n       "
         .to_string(),
     );
 
@@ -2722,9 +2938,39 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
         "[(string) @match (template_string) @match]".to_string(),
     );
 
+    // --- React Hook Queries ---
+    let hook_query = "
+        (call_expression
+            function: (identifier) @match
+            (#match? @match \"^(use)\")
+        )
+    ";
+    let custom_hook_query = r#"
+[
+  (function_declaration
+    name: (identifier) @match)
+  (lexical_declaration
+    (variable_declarator
+      name: (identifier) @match
+      value: (arrow_function)))
+  (export_statement
+    declaration: [
+      (function_declaration
+        name: (identifier) @match)
+      (lexical_declaration
+        (variable_declarator
+          name: (identifier) @match
+          value: (arrow_function)))
+    ])
+]
+(#match? @match "^use[A-Z]")
+"#;
+    queries.insert(PredicateKey::Hook, hook_query.to_string());
+    queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
+
     LanguageProfile {
         name: "TypeScript",
-        extensions: vec!["ts", "tsx"],
+        extensions: vec!["ts"],
         language,
         queries,
     }
@@ -3477,9 +3723,17 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Interface, code_evaluator.clone());
     registry.insert(PredicateKey::Trait, code_evaluator.clone());
     registry.insert(PredicateKey::Type, code_evaluator.clone());
+    registry.insert(PredicateKey::Impl, code_evaluator.clone());
+    registry.insert(PredicateKey::Macro, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
     registry.insert(PredicateKey::Str, code_evaluator.clone());
-    registry.insert(PredicateKey::Call, code_evaluator);
+    registry.insert(PredicateKey::Call, code_evaluator.clone());
+    // Add React predicates
+    registry.insert(PredicateKey::Component, code_evaluator.clone());
+    registry.insert(PredicateKey::Element, code_evaluator.clone());
+    registry.insert(PredicateKey::Hook, code_evaluator.clone());
+    registry.insert(PredicateKey::CustomHook, code_evaluator.clone());
+    registry.insert(PredicateKey::Prop, code_evaluator);
 
     registry
 }
@@ -3994,7 +4248,7 @@ File: ./src/predicates/name.rs
 use super::PredicateEvaluator;
 use crate::evaluator::{FileContext, MatchResult};
 use crate::parser::PredicateKey;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use glob::{MatchOptions, Pattern};
 
 pub(super) struct NameEvaluator;
@@ -4005,6 +4259,10 @@ impl PredicateEvaluator for NameEvaluator {
         _key: &PredicateKey,
         value: &str,
     ) -> Result<MatchResult> {
+        if value.is_empty() {
+            return Err(anyhow!("Invalid glob pattern: cannot be empty."));
+        }
+
         let file_name = context
             .path
             .file_name()
@@ -4428,6 +4686,37 @@ fn test_negation_of_hunk_predicate_produces_boolean_match() {
     cmd2.assert()
         .success()
         .stdout(predicate::str::contains("File: ../insane_test_bed/code.rs"));
+}
+
+#[test]
+fn test_empty_contains_predicate_matches_all_files() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("--format=paths")
+        .arg("contains:''"); // Empty string
+
+    // An empty `contains` query should match every file.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("code.rs"))
+        .stdout(predicate::str::contains("logical1.rs"))
+        .stdout(predicate::str::contains("trait.rs"));
+}
+
+#[test]
+fn test_empty_name_predicate_fails_gracefully() {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("name:''"); // Empty glob pattern
+
+    // An empty glob is invalid, so this should fail with a clear error.
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("Invalid glob pattern"));
 }
 
 ---
@@ -5012,6 +5301,10 @@ struct Cli {
     pattern: String,
 }
 
+impl Cli {
+    fn new() -> Self { Self { pattern: "".into() } }
+}
+
 pub fn main() {
     // This is the main function
     let _u = User::new();
@@ -5074,7 +5367,7 @@ if __name__ == "__main__":
     let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
     py_file.write_all(py_content.as_bytes()).unwrap();
 
-    // --- NEW: Add JS and TS files ---
+    // --- Add JS and TS files ---
     let js_content = r#"
 // HACK: for demo purposes
 import { a } from './lib';
@@ -5112,7 +5405,7 @@ export function createLog(message: string): ILog {
         .write_all(ts_content.as_bytes())
         .unwrap();
 
-    // --- NEW: Add a Go file ---
+    // --- Add a Go file ---
     let go_content = r#"
 package main
 
@@ -5137,7 +5430,7 @@ func main() {
         .write_all(go_content.as_bytes())
         .unwrap();
 
-    // --- NEW: Add a Java file ---
+    // --- Add a Java file ---
     let java_dir = dir.path().join("src/main/java/com/example");
     fs::create_dir_all(&java_dir).unwrap();
     let java_content = r#"
@@ -5192,6 +5485,54 @@ macro_rules! my_macro {
 "#;
     let mut macros_rs = fs::File::create(src_dir.join("macros.rs")).unwrap();
     macros_rs.write_all(macros_rs_content.as_bytes()).unwrap();
+
+    // --- Add React Test Files ---
+    let app_tsx_content = r#"
+import React, { useState } from 'react';
+import { Button } from './Button';
+import useAuth from './useAuth';
+
+// A simple component
+function App() {
+  const [count, setCount] = useState(0);
+  const { user } = useAuth();
+
+  return (
+    <div>
+      <h1>Welcome, {user?.name}</h1>
+      <p>Count: {count}</p>
+      <Button onClick={() => setCount(c => c + 1)} disabled={false} />
+    </div>
+  );
+}
+export default App;
+"#;
+    fs::File::create(src_dir.join("App.tsx"))
+        .unwrap()
+        .write_all(app_tsx_content.as_bytes())
+        .unwrap();
+
+    let button_jsx_content = r#"
+// A button component
+export const Button = ({ onClick, disabled }) => {
+  return <button onClick={onClick} disabled={disabled}>Click Me</button>;
+};
+"#;
+    fs::File::create(src_dir.join("Button.jsx"))
+        .unwrap()
+        .write_all(button_jsx_content.as_bytes())
+        .unwrap();
+
+    let hook_ts_content = r#"
+// A custom hook
+export default function useAuth() {
+  return { user: { name: 'Guest' } };
+}
+"#;
+    fs::File::create(src_dir.join("useAuth.ts"))
+        .unwrap()
+        .write_all(hook_ts_content.as_bytes())
+        .unwrap();
 
     dir
 }
@@ -5494,6 +5835,112 @@ fn test_complex_predicate_combination() -> Result<(), Box<dyn std::error::Error>
         .stdout(predicate::str::contains("utils.rs").not());
 
     Ok(())
+}
+
+---
+
+File: ./tests/filesystem_edge_cases.rs
+---
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::fs;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+use std::process::Command;
+use tempfile::tempdir;
+
+#[test]
+#[cfg(unix)] // Symlinks are best tested on Unix-like systems.
+fn test_search_does_not_follow_symlinks_by_default() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let target_file = root.join("target.txt");
+    fs::write(&target_file, "content").unwrap();
+
+    let symlink_path = root.join("link.txt");
+    symlink(&target_file, &symlink_path).unwrap();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(root);
+    cmd.arg("search")
+        .arg("--format=paths")
+        .arg("contains:content");
+
+    // The output should contain the real file but NOT the symlink.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("target.txt"))
+        .stdout(predicate::str::contains("link.txt").not());
+}
+
+#[test]
+fn test_search_handles_invalid_utf8_file_gracefully() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let invalid_path = root.join("invalid.bin");
+    let mut file = fs::File::create(&invalid_path).unwrap();
+    // Write an invalid UTF-8 byte sequence (0xC3 followed by a non-continuation byte).
+    file.write_all(&[0x41, 0x42, 0xC3, 0x28, 0x43, 0x44])
+        .unwrap();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(root);
+    // This query forces the tool to read the file content.
+    cmd.arg("search").arg("contains:any");
+
+    // The tool should not panic. It should report an error and exit.
+    cmd.assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Error evaluating file"));
+}
+
+---
+
+File: ./tests/formatter.rs
+---
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::fs;
+use std::io::Write;
+use std::process::Command;
+use tempfile::tempdir;
+
+#[test]
+fn test_formatter_merges_overlapping_hunks() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let file_path = root.join("test.txt");
+
+    // Create a file where two matches are close enough that their contexts will overlap.
+    let content = "line 1\nline 2 (match 1)\nline 3\nline 4 (match 2)\nline 5\n";
+    fs::write(&file_path, content).unwrap();
+
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.current_dir(root);
+    // Query for "match", with a context of 1 line (-C 1).
+    // The context for "match 1" is lines 1-3.
+    // The context for "match 2" is lines 3-5.
+    // These overlap on line 3 and should be merged.
+    cmd.arg("search")
+        .arg("contains:match")
+        .arg("-C")
+        .arg("1");
+
+    // The output should be a single, continuous block from line 1 to 5.
+    // Crucially, it should NOT contain the "..." separator that would
+    // appear if the hunks were printed separately.
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("line 1"))
+        .stdout(predicate::str::contains("line 2 (match 1)"))
+        .stdout(predicate::str::contains("line 3"))
+        .stdout(predicate::str::contains("line 4 (match 2)"))
+        .stdout(predicate::str::contains("line 5"))
+        .stdout(predicate::str::contains("...").not());
 }
 
 ---
@@ -5957,6 +6404,24 @@ fn test_def_not_found_js_ts() {
 
 ---
 
+File: ./tests/macos_debug.rs
+---
+// tests/macos_debug.rs
+
+extern crate rdump;
+
+use rdump::parser::{Parser, RqlParser, Rule};
+
+
+#[test]
+fn test_macos_problematic_query() {
+    let query = "in:**/shared/*/use-boolean and ext:ts";
+    let result = RqlParser::parse(Rule::query, query);
+    assert!(result.is_ok(), "Parser failed to parse the query '{:?}'. Error: {:?}", query, result.err().unwrap());
+}
+
+---
+
 File: ./tests/matches_predicate.rs
 ---
 use assert_cmd::prelude::*;
@@ -6311,6 +6776,328 @@ fn test_def_not_found_python() {
 
 ---
 
+File: ./tests/react_comprehensive_search.rs
+---
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::process::Command;
+
+// This test suite queries the `insane_test_bed/react_comprehensive.tsx` file.
+
+fn rdump_search() -> Command {
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("--format=hunks")
+        // Always target the specific test file to keep tests focused
+        .arg("path:react_comprehensive.tsx");
+    cmd
+}
+
+#[test]
+fn test_finds_class_component() {
+    rdump_search()
+        .arg("&")
+        .arg("component:ClassComponent")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("export class ClassComponent"));
+}
+
+#[test]
+fn test_finds_memoized_component() {
+    rdump_search()
+        .arg("&")
+        .arg("component:MemoizedComponent")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "export const MemoizedComponent = React.memo",
+        ));
+}
+
+#[test]
+fn test_finds_all_custom_hook_definitions() {
+    let mut cmd = rdump_search();
+    cmd.arg("&").arg("customhook:."); // Wildcard match
+    let output = cmd.output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    // Should find both useCounter and useWindowWidth
+    assert!(stdout.contains("function useCounter("));
+    assert!(stdout.contains("const useWindowWidth = () =>"));
+    assert_eq!(stdout.matches("File:").count(), 1); // Both in the same file
+}
+
+#[test]
+fn test_finds_specific_custom_hook_definition() {
+    rdump_search()
+        .arg("&")
+        .arg("customhook:useWindowWidth")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("const useWindowWidth = () =>"))
+        .stdout(predicate::str::contains("function useCounter").not());
+}
+
+#[test]
+fn test_finds_all_hook_calls() {
+    let mut cmd = rdump_search();
+    cmd.arg("&").arg("hook:."); // Wildcard match
+    let output = cmd.output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    // Should find all hook calls
+    assert!(stdout.contains("useState(initialValue)"));
+    assert!(stdout.contains("useState(window.innerWidth)"));
+    assert!(stdout.contains("useEffect(() => {"));
+    assert!(stdout.contains("useMemo(() => {"));
+    assert!(stdout.contains("useCounter(10)"));
+    assert!(stdout.contains("useWindowWidth()"));
+    assert!(stdout.contains("useRef<HTMLInputElement>(null)"));
+    assert!(stdout.contains("useContext(ThemeContext)"));
+    assert!(stdout.contains("useCallback(() => {"));
+}
+
+#[test]
+fn test_finds_specific_built_in_hook_call() {
+    rdump_search()
+        .arg("&")
+        .arg("hook:useEffect")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("useEffect(() => {"));
+}
+
+#[test]
+fn test_finds_jsx_element_and_prop() {
+    rdump_search()
+        .arg("&")
+        .arg("element:input & prop:id")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#"<input ref={inputRef} id="test-input" type="text" />"#,
+        ));
+}
+
+#[test]
+fn test_finds_custom_component_element() {
+    rdump_search()
+        .arg("&")
+        .arg("element:ClassComponent")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#"<ClassComponent title="Class Component Title" />"#,
+        ));
+}
+
+#[test]
+fn test_finds_namespaced_svg_element() {
+    // Note: The current tree-sitter grammar for TSX might parse `SVG.Circle`
+    // as a single identifier `SVG.Circle` or as a member expression.
+    // The query `element:SVG.Circle` should work if it's parsed as an identifier.
+    // If it's a member expression, a more complex query might be needed,
+    // but the current implementation handles identifiers well.
+    rdump_search()
+        .arg("&")
+        .arg("element:SVG.Circle")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            r#"<SVG.Circle cx="50" cy="50" r="40" stroke="green" fill="yellow" />"#,
+        ));
+}
+
+#[test]
+fn test_negation_of_react_predicate() {
+    // Find files that are TSX but DO NOT define a 'ClassComponent'
+    let mut cmd = Command::cargo_bin("rdump").unwrap();
+    cmd.arg("search")
+        .arg("--root")
+        .arg("../insane_test_bed")
+        .arg("--format=paths")
+        .arg("ext:tsx & !component:ClassComponent");
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("react_comprehensive.tsx").not())
+        // It should find App.tsx which is a .tsx file but doesn't define ClassComponent
+        .stdout(predicate::str::contains("App.tsx"));
+}
+
+#[test]
+fn test_find_component_with_specific_hook() {
+    // Find a component that uses the `useMemo` hook.
+    rdump_search()
+        .arg("&")
+        .arg("component:MemoizedComponent & hook:useMemo")
+        .assert()
+        .success()
+        // The output should contain the whole component definition because both predicates match the file
+        // and the hunks are combined.
+        .stdout(predicate::str::contains("export const MemoizedComponent"))
+        .stdout(predicate::str::contains("const calculated = useMemo("));
+}
+
+#[test]
+fn test_find_jsx_comment() {
+    // Note: Tree-sitter grammars might parse JSX comments differently from regular comments.
+    // This tests if the `comment` predicate is correctly configured for JSX contexts.
+    // TSX grammar does not have a dedicated `jsx_comment` node, it's just `comment`.
+    rdump_search()
+        .arg("&")
+        .arg("comment:\"A JSX comment\"")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("// A JSX comment"));
+}
+
+#[test]
+fn test_find_prop_with_boolean_value() {
+    rdump_search()
+        .arg("&")
+        .arg("element:button & prop:disabled")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("disabled={false}"));
+}
+
+---
+
+File: ./tests/react_search.rs
+---
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::process::Command;
+
+mod common;
+use common::setup_test_project;
+
+#[test]
+fn test_component_predicate_finds_functional_component() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("component:App & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("function App()"));
+}
+
+#[test]
+fn test_component_predicate_finds_arrow_function_component() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("component:Button & ext:jsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("export const Button"));
+}
+
+#[test]
+fn test_element_predicate_finds_html_element() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:h1 & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<h1>Welcome, {user?.name}</h1>"));
+}
+
+#[test]
+fn test_element_predicate_finds_component_element() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:Button & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<Button onClick="));
+}
+
+#[test]
+fn test_hook_predicate_finds_built_in_hook() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("hook:useState")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("const [count, setCount] = useState(0);"));
+}
+
+#[test]
+fn test_hook_predicate_finds_custom_hook_call() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("hook:useAuth")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("const { user } = useAuth();"));
+}
+
+#[test]
+fn test_customhook_predicate_finds_hook_definition() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("customhook:useAuth")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("export default function useAuth()"));
+}
+
+#[test]
+fn test_prop_predicate_finds_prop() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("prop:onClick")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<Button onClick={")) // In App.tsx
+        .stdout(predicate::str::contains("<button onClick={onClick}")); // In Button.jsx
+}
+
+#[test]
+fn test_react_and_logic_across_predicates() {
+    let dir = setup_test_project();
+    // Find a Button element that is also passed a `disabled` prop.
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:Button & prop:disabled")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("App.tsx"))
+        .stdout(predicate::str::contains("Button.jsx").not());
+}
+
+---
+
 File: ./tests/rust_search.rs
 ---
 use assert_cmd::prelude::*;
@@ -6421,7 +7208,7 @@ fn test_func_finds_impl_method() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("src/lib.rs"))
-        .stdout(predicate::str::contains("src/main.rs").not());
+        .stdout(predicate::str::contains("src/main.rs"));
 }
 
 #[test]

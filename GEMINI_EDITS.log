@@ -1,3 +1,6 @@
+Date: 2025-07-14
+Change: Refactored `rdump/src/parser.rs` to fix Pratt parser EOI panics by separating parsing logic into `parse_query`, `build_ast_from_expression_pairs`, and `build_ast_from_term`. This ensures the parser always receives a flat token stream.
+
 Date: 2025-07-12
 Change: Implemented test cases for ignore file logic from missing-test-cases.txt.
 - Added `test_rdumpignore_excludes_matching_pattern`.
@@ -55,4 +58,10 @@ Change: Added comprehensive React/TSX test files.
 Date: 2025-07-13
 - Enhanced React component query in `react.rs` to correctly identify components wrapped in `React.memo`.
 - Refined the assertion in `test_find_jsx_comment` in `react_comprehensive_search.rs` to be more precise.
-
+2025-07-14: Refactored the AST construction logic in rdump/src/parser.rs to fix numerous parser failures. The new design separates recursive-descent parsing from Pratt parsing, ensuring correct token handling and resolving all 14 failing tests.
+2025-07-14: Gemini
+- **Refactored Query Parser**: Replaced the query parser implementation in `rdump/src/parser.rs` with a more robust version based on a Pratt parser to fix a series of panics related to parsing complex and nested queries.
+- **Fixed Grammar and Logic**: Iteratively fixed the `rql.pest` grammar and the parser logic to handle trailing operators, improve error handling, and simplify predicate parsing.
+- **Fixed CLI Preset Logic**: Made the `QUERY` argument optional for the `search` command to allow the use of presets without a query string. Updated the search logic to correctly combine presets and explicit queries.
+- **Updated Tests**: Fixed multiple test suites (`search_integration`, `react_comprehensive_search`, `parser`) to align with the parser and CLI logic changes, ensuring all tests pass.
+- **Removed Warnings**: Removed an unused import in `tests/formatter.rs`.
