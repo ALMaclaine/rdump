@@ -1997,6 +1997,12 @@ pub enum PredicateKey {
     Str,
     // Usage
     Call,
+    // --- React-specific Predicates ---
+    Component,
+    Element,
+    Hook,
+    CustomHook,
+    Prop,
     // A key for testing or unknown predicates
     Other(String),
 }
@@ -2024,6 +2030,11 @@ impl AsRef<str> for PredicateKey {
             PredicateKey::Comment => "comment",
             PredicateKey::Str => "str",
             PredicateKey::Call => "call",
+            PredicateKey::Component => "component",
+            PredicateKey::Element => "element",
+            PredicateKey::Hook => "hook",
+            PredicateKey::CustomHook => "customhook",
+            PredicateKey::Prop => "prop",
             PredicateKey::Other(s) => s.as_str(),
         }
     }
@@ -2053,6 +2064,12 @@ impl From<&str> for PredicateKey {
             "comment" => Self::Comment,
             "str" => Self::Str,
             "call" => Self::Call,
+            // --- REACT ---
+            "component" => Self::Component,
+            "element" => Self::Element,
+            "hook" => Self::Hook,
+            "customhook" => Self::CustomHook,
+            "prop" => Self::Prop,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }
@@ -2451,6 +2468,10 @@ impl PredicateEvaluator for CodeAwareEvaluator {
                     PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
                         captured_text.contains(value)
                     }
+                    // Hook predicates can match any hook (`hook:.`) or a specific one
+                    PredicateKey::Hook | PredicateKey::CustomHook => {
+                        value == "." || captured_text == value
+                    }
                     // Definition-based predicates require an exact match on the identifier, unless a wildcard is used.
                     _ => value == "." || captured_text == value,
                 };
@@ -2604,7 +2625,7 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
 
     LanguageProfile {
         name: "JavaScript",
-        extensions: vec!["js", "jsx"],
+        extensions: vec!["js"],
         language,
         queries,
     }
@@ -2622,6 +2643,7 @@ mod go;
 mod java;
 mod javascript;
 mod python;
+mod react; // Add react module
 mod rust;
 mod typescript;
 
@@ -2642,6 +2664,7 @@ pub(super) static LANGUAGE_PROFILES: Lazy<HashMap<&'static str, LanguageProfile>
         m.insert("java", java::create_java_profile());
         m.insert("ts", typescript::create_typescript_profile());
         m.insert("js", javascript::create_javascript_profile());
+        m.insert("jsx", react::create_react_profile()); // Add react profile
         m
     });
 
@@ -2702,6 +2725,89 @@ pub(super) fn create_python_profile() -> LanguageProfile {
     LanguageProfile {
         name: "Python",
         extensions: vec!["py"],
+        language,
+        queries,
+    }
+}
+
+---
+
+File: ./rdump/src/predicates/code_aware/profiles/react.rs
+---
+use super::LanguageProfile;
+use crate::parser::PredicateKey;
+use std::collections::HashMap;
+
+/// Creates the profile for the React (JSX/TSX).
+pub(super) fn create_react_profile() -> LanguageProfile {
+    let language = tree_sitter_typescript::language_tsx();
+    let mut queries = HashMap::new();
+
+    // --- Component & Element Queries ---
+    let component_query = "
+        [
+            (class_declaration name: (type_identifier) @match)
+            (function_declaration name: (identifier) @match)
+            (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (arrow_function)
+                )
+            )
+        ]
+    ";
+    let element_query = "
+        [
+            (jsx_opening_element name: (_) @match)
+            (jsx_self_closing_element name: (_) @match)
+        ]
+    ";
+    queries.insert(PredicateKey::Component, component_query.to_string());
+    queries.insert(PredicateKey::Element, element_query.to_string());
+
+    // --- Hook Queries ---
+    let hook_query = "
+        (call_expression
+            function: (identifier) @match
+            (#match? @match \"^(use)\")
+        )
+    ";
+    let custom_hook_query = "
+        [
+            (function_declaration
+                name: (identifier) @match
+                (#match? @match \"^use[A-Z]\")
+            )
+            (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (arrow_function)
+                )
+                (#match? @match \"^use[A-Z]\")
+            )
+        ]
+    ";
+    queries.insert(PredicateKey::Hook, hook_query.to_string());
+    queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
+
+    // --- Prop Query ---
+    let prop_query = "(jsx_attribute (property_identifier) @match)";
+    queries.insert(PredicateKey::Prop, prop_query.to_string());
+
+    // --- Generic Queries (reusing from TS) ---
+    queries.insert(
+        PredicateKey::Import,
+        "(import_statement) @match".to_string(),
+    );
+    queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
+    queries.insert(
+        PredicateKey::Str,
+        "[(string) @match (template_string) @match]".to_string(),
+    );
+
+    LanguageProfile {
+        name: "React",
+        extensions: vec!["jsx", "tsx"],
         language,
         queries,
     }
@@ -2828,7 +2934,7 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
 
     LanguageProfile {
         name: "TypeScript",
-        extensions: vec!["ts", "tsx"],
+        extensions: vec!["ts"],
         language,
         queries,
     }
@@ -3583,7 +3689,13 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Type, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
     registry.insert(PredicateKey::Str, code_evaluator.clone());
-    registry.insert(PredicateKey::Call, code_evaluator);
+    registry.insert(PredicateKey::Call, code_evaluator.clone());
+    // Add React predicates
+    registry.insert(PredicateKey::Component, code_evaluator.clone());
+    registry.insert(PredicateKey::Element, code_evaluator.clone());
+    registry.insert(PredicateKey::Hook, code_evaluator.clone());
+    registry.insert(PredicateKey::CustomHook, code_evaluator.clone());
+    registry.insert(PredicateKey::Prop, code_evaluator);
 
     registry
 }
@@ -6552,6 +6664,162 @@ fn test_def_not_found_python() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty());
+}
+
+---
+
+File: ./rdump/tests/react_search.rs
+---
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::fs;
+use std::io::Write;
+use std::process::Command;
+use tempfile::TempDir;
+
+mod common;
+
+fn setup_react_test_project() -> TempDir {
+    let dir = common::setup_test_project();
+    let src_dir = dir.path().join("src");
+
+    let jsx_content = r#"
+import React from 'react';
+
+function MyComponent({ prop1 }) {
+  return <div className="my-component">Hello, World!</div>;
+}
+
+const AnotherComponent = () => {
+  return <MyComponent prop1="test" />;
+};
+
+export default AnotherComponent;
+"#;
+    fs::File::create(src_dir.join("test.jsx"))
+        .unwrap()
+        .write_all(jsx_content.as_bytes())
+        .unwrap();
+
+    let tsx_content = r#"
+import React, { useState, useEffect } from 'react';
+
+// A custom hook
+function useData(url: string) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    fetch(url).then(res => res.json()).then(setData);
+  }, [url]);
+  return data;
+}
+
+interface MyComponentProps {
+  prop2: string;
+}
+
+const MyTsxComponent: React.FC<MyComponentProps> = ({ prop2 }) => {
+  const data = useData('/api/data');
+  const [count, setCount] = useState(0);
+
+  return (
+    <div onClick={() => setCount(count + 1)}>
+      <p>Data: {JSON.stringify(data)}</p>
+      <p>Count: {count}</p>
+    </div>
+  );
+};
+
+export default MyTsxComponent;
+"#;
+    fs::File::create(src_dir.join("test.tsx"))
+        .unwrap()
+        .write_all(tsx_content.as_bytes())
+        .unwrap();
+
+    dir
+}
+
+#[test]
+fn test_component_predicate() {
+    let dir = setup_react_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("component:MyComponent")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test.jsx"))
+        .stdout(predicate::str::contains("function MyComponent({ prop1 })"));
+}
+
+#[test]
+fn test_element_predicate() {
+    let dir = setup_react_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:div")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test.jsx"))
+        .stdout(predicate::str::contains("test.tsx"));
+}
+
+#[test]
+fn test_hook_predicate() {
+    let dir = setup_react_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("hook:useState")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test.tsx"))
+        .stdout(predicate::str::contains("const [data, setData] = useState(null);"));
+}
+
+#[test]
+fn test_custom_hook_predicate() {
+    let dir = setup_react_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("customhook:useData")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test.tsx"))
+        .stdout(predicate::str::contains("function useData(url: string)"));
+}
+
+#[test]
+fn test_prop_predicate() {
+    let dir = setup_react_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("prop:prop1")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test.jsx"))
+        .stdout(predicate::str::contains("return <MyComponent prop1=\"test\" />;"));
+}
+
+#[test]
+fn test_combined_react_query() {
+    let dir = setup_react_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("component:MyTsxComponent & element:p & hook:useState")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test.tsx"));
 }
 
 ---

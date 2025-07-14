@@ -106,7 +106,7 @@ fn test_func_finds_impl_method() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("src/lib.rs"))
-        .stdout(predicate::str::contains("src/main.rs").not());
+        .stdout(predicate::str::contains("src/main.rs"));
 }
 
 #[test]

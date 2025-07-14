@@ -36,6 +36,46 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
         "[(string) @match (template_string) @match]".to_string(),
     );
 
+    // --- React Hook Queries ---
+    let hook_query = "
+        (call_expression
+            function: (identifier) @match
+            (#match? @match \"^(use)\")
+        )
+    ";
+    let custom_hook_query = "
+        [
+            (function_declaration
+                name: (identifier) @match
+                (#match? @match \"^use[A-Z]\")
+            )
+            (export_statement
+              declaration: (function_declaration
+                name: (identifier) @match
+                (#match? @match \"^use[A-Z]\")
+              )
+            )
+            (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (arrow_function)
+                )
+                (#match? @match \"^use[A-Z]\")
+            )
+            (export_statement
+              declaration: (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (arrow_function)
+                )
+                (#match? @match \"^use[A-Z]\")
+              )
+            )
+        ]
+    ";
+    queries.insert(PredicateKey::Hook, hook_query.to_string());
+    queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
+
     LanguageProfile {
         name: "TypeScript",
         extensions: vec!["ts"],

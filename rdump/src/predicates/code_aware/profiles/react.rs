@@ -42,12 +42,27 @@ pub(super) fn create_react_profile() -> LanguageProfile {
                 name: (identifier) @match
                 (#match? @match \"^use[A-Z]\")
             )
+            (export_statement
+              declaration: (function_declaration
+                name: (identifier) @match
+                (#match? @match \"^use[A-Z]\")
+              )
+            )
             (lexical_declaration
                 (variable_declarator
                     name: (identifier) @match
                     value: (arrow_function)
                 )
                 (#match? @match \"^use[A-Z]\")
+            )
+            (export_statement
+              declaration: (lexical_declaration
+                (variable_declarator
+                    name: (identifier) @match
+                    value: (arrow_function)
+                )
+                (#match? @match \"^use[A-Z]\")
+              )
             )
         ]
     ";

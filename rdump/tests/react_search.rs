@@ -1,103 +1,65 @@
 use assert_cmd::prelude::*;
 use predicates::prelude::*;
-use std::fs;
-use std::io::Write;
 use std::process::Command;
-use tempfile::TempDir;
 
 mod common;
-
-fn setup_react_test_project() -> TempDir {
-    let dir = common::setup_test_project();
-    let src_dir = dir.path().join("src");
-
-    let jsx_content = r#"
-import React from 'react';
-
-function MyComponent({ prop1 }) {
-  return <div className="my-component">Hello, World!</div>;
-}
-
-const AnotherComponent = () => {
-  return <MyComponent prop1="test" />;
-};
-
-export default AnotherComponent;
-"#;
-    fs::File::create(src_dir.join("test.jsx"))
-        .unwrap()
-        .write_all(jsx_content.as_bytes())
-        .unwrap();
-
-    let tsx_content = r#"
-import React, { useState, useEffect } from 'react';
-
-// A custom hook
-function useData(url: string) {
-  const [data, setData] = useState(null);
-  useEffect(() => {
-    fetch(url).then(res => res.json()).then(setData);
-  }, [url]);
-  return data;
-}
-
-interface MyComponentProps {
-  prop2: string;
-}
-
-const MyTsxComponent: React.FC<MyComponentProps> = ({ prop2 }) => {
-  const data = useData('/api/data');
-  const [count, setCount] = useState(0);
-
-  return (
-    <div onClick={() => setCount(count + 1)}>
-      <p>Data: {JSON.stringify(data)}</p>
-      <p>Count: {count}</p>
-    </div>
-  );
-};
-
-export default MyTsxComponent;
-"#;
-    fs::File::create(src_dir.join("test.tsx"))
-        .unwrap()
-        .write_all(tsx_content.as_bytes())
-        .unwrap();
-
-    dir
-}
+use common::setup_test_project;
 
 #[test]
-fn test_component_predicate() {
-    let dir = setup_react_test_project();
+fn test_component_predicate_finds_functional_component() {
+    let dir = setup_test_project();
     Command::cargo_bin("rdump")
         .unwrap()
         .current_dir(dir.path())
         .arg("search")
-        .arg("component:MyComponent")
+        .arg("component:App & ext:tsx")
         .assert()
         .success()
-        .stdout(predicate::str::contains("test.jsx"))
-        .stdout(predicate::str::contains("function MyComponent({ prop1 })"));
+        .stdout(predicate::str::contains("function App()"));
 }
 
 #[test]
-fn test_element_predicate() {
-    let dir = setup_react_test_project();
+fn test_component_predicate_finds_arrow_function_component() {
+    let dir = setup_test_project();
     Command::cargo_bin("rdump")
         .unwrap()
         .current_dir(dir.path())
         .arg("search")
-        .arg("element:div")
+        .arg("component:Button & ext:jsx")
         .assert()
         .success()
-        .stdout(predicate::str::contains("test.jsx"))
-        .stdout(predicate::str::contains("test.tsx"));
+        .stdout(predicate::str::contains("export const Button"));
 }
 
 #[test]
-fn test_hook_predicate() {
-    let dir = setup_react_test_project();
+fn test_element_predicate_finds_html_element() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:h1 & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<h1>Welcome, {user?.name}</h1>"));
+}
+
+#[test]
+fn test_element_predicate_finds_component_element() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:Button & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<Button onClick="));
+}
+
+#[test]
+fn test_hook_predicate_finds_built_in_hook() {
+    let dir = setup_test_project();
     Command::cargo_bin("rdump")
         .unwrap()
         .current_dir(dir.path())
@@ -105,47 +67,60 @@ fn test_hook_predicate() {
         .arg("hook:useState")
         .assert()
         .success()
-        .stdout(predicate::str::contains("test.tsx"))
-        .stdout(predicate::str::contains("const [data, setData] = useState(null);"));
+        .stdout(predicate::str::contains("const [count, setCount] = useState(0);"));
 }
 
 #[test]
-fn test_custom_hook_predicate() {
-    let dir = setup_react_test_project();
+fn test_hook_predicate_finds_custom_hook_call() {
+    let dir = setup_test_project();
     Command::cargo_bin("rdump")
         .unwrap()
         .current_dir(dir.path())
         .arg("search")
-        .arg("customhook:useData")
+        .arg("hook:useAuth")
         .assert()
         .success()
-        .stdout(predicate::str::contains("test.tsx"))
-        .stdout(predicate::str::contains("function useData(url: string)"));
+        .stdout(predicate::str::contains("const { user } = useAuth();"));
 }
 
 #[test]
-fn test_prop_predicate() {
-    let dir = setup_react_test_project();
+fn test_customhook_predicate_finds_hook_definition() {
+    let dir = setup_test_project();
     Command::cargo_bin("rdump")
         .unwrap()
         .current_dir(dir.path())
         .arg("search")
-        .arg("prop:prop1")
+        .arg("customhook:useAuth")
         .assert()
         .success()
-        .stdout(predicate::str::contains("test.jsx"))
-        .stdout(predicate::str::contains("return <MyComponent prop1=\"test\" />;"));
+        .stdout(predicate::str::contains("export default function useAuth()"));
 }
 
 #[test]
-fn test_combined_react_query() {
-    let dir = setup_react_test_project();
+fn test_prop_predicate_finds_prop() {
+    let dir = setup_test_project();
     Command::cargo_bin("rdump")
         .unwrap()
         .current_dir(dir.path())
         .arg("search")
-        .arg("component:MyTsxComponent & element:p & hook:useState")
+        .arg("prop:onClick")
         .assert()
         .success()
-        .stdout(predicate::str::contains("test.tsx"));
+        .stdout(predicate::str::contains("<Button onClick={")) // In App.tsx
+        .stdout(predicate::str::contains("<button onClick={onClick}")); // In Button.jsx
+}
+
+#[test]
+fn test_react_and_logic_across_predicates() {
+    let dir = setup_test_project();
+    // Find a Button element that is also passed a `disabled` prop.
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:Button & prop:disabled")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("App.tsx"))
+        .stdout(predicate::str::contains("Button.jsx").not());
 }

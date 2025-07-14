@@ -78,10 +78,19 @@ pub struct SearchArgs {
     ///   interface:<str>    - An interface definition
     ///   trait:<str>        - A trait definition
     ///   type:<str>         - A type alias
+    ///   impl:<str>         - An implementation block (e.g., `impl User`)
+    ///   macro:<str>        - A macro definition
     ///
     /// SYNTACTIC CONTENT:
     ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
     ///   str:<str>          - Text inside a string literal
+    ///
+    #[doc = "REACT-SPECIFIC PREDICATES (.jsx, .tsx):"]
+    ///   component:<str>    - A React component definition
+    ///   element:<str>      - A JSX element/tag (e.g., `div`, `MyComponent`)
+    ///   hook:<str>         - A React hook call (e.g., `useState`, `useEffect`)
+    ///   customhook:<str>   - A custom hook definition (e.g., `useAuth`)
+    ///   prop:<str>         - A prop being passed to a JSX element
     #[arg(verbatim_doc_comment, name = "QUERY_PARTS")]
     pub query: Vec<String>,
     #[arg(long, short)]

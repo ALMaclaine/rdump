@@ -29,6 +29,8 @@ pub enum PredicateKey {
     Interface,
     Trait,
     Type,
+    Impl,
+    Macro,
     // Syntactic Content
     Comment,
     Str,
@@ -64,6 +66,8 @@ impl AsRef<str> for PredicateKey {
             PredicateKey::Interface => "interface",
             PredicateKey::Trait => "trait",
             PredicateKey::Type => "type",
+            PredicateKey::Impl => "impl",
+            PredicateKey::Macro => "macro",
             PredicateKey::Comment => "comment",
             PredicateKey::Str => "str",
             PredicateKey::Call => "call",
@@ -98,6 +102,8 @@ impl From<&str> for PredicateKey {
             "interface" => Self::Interface,
             "trait" => Self::Trait,
             "type" => Self::Type,
+            "impl" => Self::Impl,
+            "macro" => Self::Macro,
             "comment" => Self::Comment,
             "str" => Self::Str,
             "call" => Self::Call,
@@ -327,6 +333,26 @@ mod tests {
         assert_eq!(
             parse_query("call:my_func").unwrap(),
             *predicate(PredicateKey::Call, "my_func")
+        );
+    }
+
+    #[test]
+    fn test_parse_react_and_new_rust_predicates() {
+        assert_eq!(
+            parse_query("component:App").unwrap(),
+            *predicate(PredicateKey::Component, "App")
+        );
+        assert_eq!(
+            parse_query("hook:useState").unwrap(),
+            *predicate(PredicateKey::Hook, "useState")
+        );
+        assert_eq!(
+            parse_query("macro:my_macro").unwrap(),
+            *predicate(PredicateKey::Macro, "my_macro")
+        );
+        assert_eq!(
+            parse_query("impl:User").unwrap(),
+            *predicate(PredicateKey::Impl, "User")
         );
     }
 

@@ -1,8 +1,210 @@
-I will now implement the requested features to add React/JSX search capabilities to `rdump`.
+Of course. Based on the analysis, the next logical step is to implement the missing documentation and tests, and to fix the broken tests for the `macro` and `impl` predicates.
 
-### 1. Update Parser with React Predicates
+Here are the next set of changes.
 
-First, I'll update the `PredicateKey` enum in the parser to recognize the new React-specific search terms.
+### 1. Update CLI Help and Parser
+
+I'll start by updating the `SearchArgs` documentation in `lib.rs` to include the new predicates. I will also add the `macro` and `impl` predicates to the parser to fix the failing tests.
+
+```rust
+// rdump/src/lib.rs
+// Declare all our modules
+pub mod commands;
+pub mod config;
+pub mod evaluator;
+pub mod formatter;
+pub mod parser;
+pub mod predicates;
+
+use anyhow::Result;
+use clap::{Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+// Bring our command functions into scope
+use commands::{lang::run_lang, preset::run_preset, search::run_search};
+
+// These structs and enums define the public API of our CLI.
+// They need to be public so the `commands` modules can use them.
+#[derive(Parser, Debug)]
+#[command(
+    version,
+    about = "A fast, expressive, code-aware tool to find and dump file contents."
+)]
+pub struct Cli {
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Search for files using a query (default command).
+    #[command(visible_alias = "s")]
+    Search(SearchArgs),
+    /// List supported languages and their available predicates.
+    #[command(visible_alias = "l")]
+    Lang(LangArgs),
+    /// Manage saved presets.
+    #[command(visible_alias = "p")]
+    Preset(PresetArgs),
+}
+
+#[derive(Debug, Clone, ValueEnum, Default, PartialEq)]
+pub enum ColorChoice {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+#[derive(Parser, Debug)]
+pub struct SearchArgs {
+    /// The query string to search for, using rdump Query Language (RQL).
+    ///
+    /// RQL supports logical operators (&, |, !), parentheses, and key:value predicates.
+    /// Values with spaces must be quoted (e.g., contains:'fn main').
+    ///
+    /// METADATA PREDICATES:
+    ///   ext:<str>          - File extension (e.g., "rs", "toml")
+    ///   name:<glob>        - File name glob pattern (e.g., "test_*.rs")
+    ///   path:<str>         - Substring in the full file path
+    ///   in:<path>          - Directory path to search within
+    ///   size:[>|<]<num>[kb|mb] - File size (e.g., ">10kb")
+    ///   modified:[>|<]<num>[h|d|w] - Modified time (e.g., "<2d")
+    ///
+    /// CONTENT PREDICATES:
+    ///   contains:<str>     - Literal string a file contains
+    ///   matches:<regex>    - Regular expression a file's content matches
+    ///
+    #[doc = "CODE-AWARE PREDICATES for supported languages:"]
+    ///   def:<str>          - A generic definition (class, struct, enum, etc.)
+    ///   func:<str>         - A function or method
+    ///   import:<str>       - An import or use statement
+    ///   call:<str>         - A function or method call site
+    ///
+    /// GRANULAR DEFINITIONS:
+    ///   class:<str>        - A class definition
+    ///   struct:<str>       - A struct definition
+    ///   enum:<str>         - An enum definition
+    ///   interface:<str>    - An interface definition
+    ///   trait:<str>        - A trait definition
+    ///   type:<str>         - A type alias
+    ///   impl:<str>         - An implementation block (e.g., `impl User`)
+    ///   macro:<str>        - A macro definition
+    ///
+    /// SYNTACTIC CONTENT:
+    ///   comment:<str>      - Text inside a comment (e.g., "TODO", "FIXME")
+    ///   str:<str>          - Text inside a string literal
+    ///
+    #[doc = "REACT-SPECIFIC PREDICATES (.jsx, .tsx):"]
+    ///   component:<str>    - A React component definition
+    ///   element:<str>      - A JSX element/tag (e.g., `div`, `MyComponent`)
+    ///   hook:<str>         - A React hook call (e.g., `useState`, `useEffect`)
+    ///   customhook:<str>   - A custom hook definition (e.g., `useAuth`)
+    ///   prop:<str>         - A prop being passed to a JSX element
+    #[arg(verbatim_doc_comment, name = "QUERY_PARTS")]
+    pub query: Vec<String>,
+    #[arg(long, short)]
+    pub preset: Vec<String>,
+    #[arg(short, long, default_value = ".")]
+    pub root: PathBuf,
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+    #[arg(short, long)]
+    pub line_numbers: bool,
+    #[arg(long, help = "Alias for --format=cat, useful for piping")]
+    pub no_headers: bool,
+    #[arg(long, value_enum, default_value_t = Format::Hunks)]
+    pub format: Format,
+    #[arg(long)]
+    pub no_ignore: bool,
+    #[arg(long)]
+    pub hidden: bool,
+    #[arg(long, value_enum, default_value_t = ColorChoice::Auto, help = "When to use syntax highlighting")]
+    pub color: ColorChoice,
+    #[arg(long)]
+    pub max_depth: Option<usize>,
+    #[arg(
+        long,
+        short = 'C',
+        value_name = "LINES",
+        help = "Show LINES of context around matches for --format=hunks"
+    )]
+    pub context: Option<usize>,
+
+    /// List files with metadata instead of dumping content. Alias for --format=find
+    #[arg(long)]
+    pub find: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct LangArgs {
+    #[command(subcommand)]
+    pub action: Option<LangAction>,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum LangAction {
+    /// List all supported languages.
+    List,
+    /// Describe the predicates available for a specific language.
+    Describe { language: String },
+}
+
+#[derive(Parser, Debug)]
+pub struct PresetArgs {
+    #[command(subcommand)]
+    pub action: PresetAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum PresetAction {
+    /// List all available presets.
+    List,
+    /// Add or update a preset in the global config file.
+    Add {
+        #[arg(required = true)]
+        name: String,
+        #[arg(required = true)]
+        query: String,
+    },
+    /// Remove a preset from the global config file.
+    Remove {
+        #[arg(required = true)]
+        name: String,
+    },
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+pub enum Format {
+    /// Show only the specific code blocks ("hunks") that match a semantic query
+    Hunks,
+    /// Human-readable markdown with file headers
+    Markdown,
+    /// Machine-readable JSON
+    Json,
+    /// A simple list of matching file paths
+    Paths,
+    /// Raw concatenated file content, for piping
+    Cat,
+    /// `ls`-like output with file metadata
+    Find,
+}
+
+// This is the function that will be called from main.rs
+pub fn run() -> Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::Search(args) => run_search(args),
+        Commands::Lang(args) => {
+            // Default to `list` if no subcommand is given for `lang`
+            let action = args.action.unwrap_or(LangAction::List);
+            run_lang(action)
+        }
+        Commands::Preset(args) => run_preset(args.action),
+    }
+}
+```
 
 ```rust
 // rdump/src/parser.rs
@@ -37,6 +239,8 @@ pub enum PredicateKey {
     Interface,
     Trait,
     Type,
+    Impl,
+    Macro,
     // Syntactic Content
     Comment,
     Str,
@@ -72,6 +276,8 @@ impl AsRef<str> for PredicateKey {
             PredicateKey::Interface => "interface",
             PredicateKey::Trait => "trait",
             PredicateKey::Type => "type",
+            PredicateKey::Impl => "impl",
+            PredicateKey::Macro => "macro",
             PredicateKey::Comment => "comment",
             PredicateKey::Str => "str",
             PredicateKey::Call => "call",
@@ -106,6 +312,8 @@ impl From<&str> for PredicateKey {
             "interface" => Self::Interface,
             "trait" => Self::Trait,
             "type" => Self::Type,
+            "impl" => Self::Impl,
+            "macro" => Self::Macro,
             "comment" => Self::Comment,
             "str" => Self::Str,
             "call" => Self::Call,
@@ -339,6 +547,26 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_react_and_new_rust_predicates() {
+        assert_eq!(
+            parse_query("component:App").unwrap(),
+            *predicate(PredicateKey::Component, "App")
+        );
+        assert_eq!(
+            parse_query("hook:useState").unwrap(),
+            *predicate(PredicateKey::Hook, "useState")
+        );
+        assert_eq!(
+            parse_query("macro:my_macro").unwrap(),
+            *predicate(PredicateKey::Macro, "my_macro")
+        );
+        assert_eq!(
+            parse_query("impl:User").unwrap(),
+            *predicate(PredicateKey::Impl, "User")
+        );
+    }
+
+    #[test]
     fn test_error_on_trailing_operator() {
         let result = parse_query("ext:rs &");
         let err = result.unwrap_err();
@@ -433,134 +661,87 @@ mod tests {
 }
 ```
 
-### 2. Create React Language Profile
+### 2. Update Language Profiles and Predicate Registry
 
-Next, I'll create a new language profile for React, complete with tree-sitter queries for the new predicates. This profile will handle both JSX and TSX syntax.
+Next, I'll update the Rust profile with the new `macro` and `impl` queries and register all the new predicates.
 
 ```rust
-// rdump/src/predicates/code_aware/profiles/react.rs
+// rdump/src/predicates/code_aware/profiles/rust.rs
 use super::LanguageProfile;
 use crate::parser::PredicateKey;
 use std::collections::HashMap;
 
-/// Creates the profile for the React (JSX/TSX).
-pub(super) fn create_react_profile() -> LanguageProfile {
-    let language = tree_sitter_typescript::language_tsx();
+/// Creates the profile for the Rust language.
+pub(super) fn create_rust_profile() -> LanguageProfile {
+    let language = tree_sitter_rust::language();
     let mut queries = HashMap::new();
 
-    // --- Component & Element Queries ---
-    let component_query = "
-        [
-            (class_declaration name: (type_identifier) @match)
-            (function_declaration name: (identifier) @match)
-            (lexical_declaration
-                (variable_declarator
-                    name: (identifier) @match
-                    value: (arrow_function)
-                )
-            )
-        ]
-    ";
-    let element_query = "
-        [
-            (jsx_opening_element name: (_) @match)
-            (jsx_self_closing_element name: (_) @match)
-        ]
-    ";
-    queries.insert(PredicateKey::Component, component_query.to_string());
-    queries.insert(PredicateKey::Element, element_query.to_string());
+    let struct_query = "(struct_item name: (_) @match)";
+    let enum_query = "(enum_item name: (_) @match)";
+    let trait_query = "(trait_item name: (_) @match)";
+    let type_query = "(type_item name: (type_identifier) @match)";
+    let impl_query = "(impl_item type: (type_identifier) @match)";
+    let macro_query = "(macro_definition name: (identifier) @match)";
 
-    // --- Hook Queries ---
-    let hook_query = "
-        (call_expression
-            function: (identifier) @match
-            (#match? @match \"^(use)\")
-        )
-    ";
-    let custom_hook_query = "
+    let def_query = [struct_query, enum_query, trait_query, type_query].join("\n");
+
+    queries.insert(PredicateKey::Def, def_query);
+    queries.insert(PredicateKey::Struct, struct_query.to_string());
+    queries.insert(PredicateKey::Enum, enum_query.to_string());
+    queries.insert(PredicateKey::Trait, trait_query.to_string());
+    queries.insert(PredicateKey::Type, type_query.to_string());
+    queries.insert(PredicateKey::Impl, impl_query.to_string());
+    queries.insert(PredicateKey::Macro, macro_query.to_string());
+
+    // Query for standalone functions and methods in traits or impls.
+    queries.insert(
+        PredicateKey::Func,
+        "
         [
-            (function_declaration
-                name: (identifier) @match
-                (#match? @match \"^use[A-Z]\")
-            )
-            (lexical_declaration
-                (variable_declarator
-                    name: (identifier) @match
-                    value: (arrow_function)
-                )
-                (#match? @match \"^use[A-Z]\")
-            )
-        ]
-    ";
-    queries.insert(PredicateKey::Hook, hook_query.to_string());
-    queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
-
-    // --- Prop Query ---
-    let prop_query = "(jsx_attribute (property_identifier) @match)";
-    queries.insert(PredicateKey::Prop, prop_query.to_string());
-
-    // --- Generic Queries (reusing from TS) ---
+            (function_item name: (identifier) @match)
+            (function_signature_item name: (identifier) @match)
+        ]"
+        .to_string(),
+    );
+    // Query for the entire `use` declaration. We will match against its text content.
     queries.insert(
         PredicateKey::Import,
-        "(import_statement) @match".to_string(),
+        "
+        (use_declaration) @match
+        "
+        .to_string(),
     );
-    queries.insert(PredicateKey::Comment, "(comment) @match".to_string());
+
+    // Query for function and method call sites.
+    queries.insert(
+        PredicateKey::Call,
+        "
+       (call_expression
+           function: [
+               (identifier) @match
+               (field_expression field: (field_identifier) @match)
+           ]
+       )
+       (macro_invocation macro: (identifier) @match)
+       "
+        .to_string(),
+    );
+
+    queries.insert(
+        PredicateKey::Comment,
+        "[(line_comment) @match (block_comment) @match]".to_string(),
+    );
     queries.insert(
         PredicateKey::Str,
-        "[(string) @match (template_string) @match]".to_string(),
+        "[(string_literal) @match (raw_string_literal) @match]".to_string(),
     );
 
     LanguageProfile {
-        name: "React",
-        extensions: vec!["jsx", "tsx"],
+        name: "Rust",
+        extensions: vec!["rs"],
         language,
         queries,
     }
-}
-```
-
-### 3. Integrate React Profile and Predicates
-
-Now, I'll register the new profile and its predicates within the `rdump` application.
-
-```rust
-// rdump/src/predicates/code_aware/profiles/mod.rs
-use crate::parser::PredicateKey;
-use once_cell::sync::Lazy;
-use std::collections::HashMap;
-
-mod go;
-mod java;
-mod javascript;
-mod python;
-mod react; // Add react module
-mod rust;
-mod typescript;
-
-/// Defines the tree-sitter queries and metadata for a specific language.
-pub struct LanguageProfile {
-    pub name: &'static str,
-    pub extensions: Vec<&'static str>,
-    pub(super) language: tree_sitter::Language,
-    pub queries: HashMap<PredicateKey, String>,
-}
-
-pub(super) static LANGUAGE_PROFILES: Lazy<HashMap<&'static str, LanguageProfile>> =
-    Lazy::new(|| {
-        let mut m = HashMap::new();
-        m.insert("rs", rust::create_rust_profile());
-        m.insert("py", python::create_python_profile());
-        m.insert("go", go::create_go_profile());
-        m.insert("java", java::create_java_profile());
-        m.insert("ts", typescript::create_typescript_profile());
-        m.insert("js", javascript::create_javascript_profile());
-        m.insert("jsx", react::create_react_profile()); // Add react profile
-        m
-    });
-
-/// Returns a list of all configured language profiles.
-pub fn list_language_profiles() -> Vec<&'static LanguageProfile> {
-    LANGUAGE_PROFILES.values().collect()
 }
 ```
 
@@ -640,6 +821,8 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Interface, code_evaluator.clone());
     registry.insert(PredicateKey::Trait, code_evaluator.clone());
     registry.insert(PredicateKey::Type, code_evaluator.clone());
+    registry.insert(PredicateKey::Impl, code_evaluator.clone());
+    registry.insert(PredicateKey::Macro, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
     registry.insert(PredicateKey::Str, code_evaluator.clone());
     registry.insert(PredicateKey::Call, code_evaluator.clone());
@@ -1100,106 +1283,401 @@ def process_data():
 }
 ```
 
-### 4. Update Matching Logic for Hooks
+### 3. Implement React Integration Tests
 
-The existing `CodeAwareEvaluator` performs an exact match or substring match. For hooks (`useState`, `useCustomHook`), a prefix match is more appropriate. I will adjust the matching logic.
+Finally, I'll add the new test suite for React. This involves creating the test file and updating the common test setup helper to include React files.
 
 ```rust
-// rdump/src/predicates/code_aware/mod.rs
-use crate::evaluator::{FileContext, MatchResult};
-use crate::parser::PredicateKey;
-use crate::predicates::PredicateEvaluator;
-use anyhow::{Context, Result};
-use tree_sitter::{Query, QueryCursor};
+// rdump/tests/common.rs
+#![allow(dead_code)] // a-llow dead code for this common helper module
 
-pub mod profiles;
+use std::fs;
+use std::io::Write;
+use tempfile::tempdir;
+use tempfile::TempDir;
 
-/// The evaluator that uses tree-sitter to perform code-aware queries.
-#[derive(Debug, Clone)]
-pub struct CodeAwareEvaluator;
+/// A helper to set up a temporary directory with a multi-language sample project.
+pub fn setup_test_project() -> TempDir {
+    let dir = tempdir().unwrap();
+    let src_dir = dir.path().join("src");
+    fs::create_dir(&src_dir).unwrap();
 
-impl PredicateEvaluator for CodeAwareEvaluator {
-    fn evaluate(
-        &self,
-        context: &mut FileContext,
-        key: &PredicateKey,
-        value: &str,
-    ) -> Result<MatchResult> {
-        // 1. Determine the language from the file extension.
-        let extension = context
-            .path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        let binding = profiles::list_language_profiles();
-        let profile = match binding.iter().find(|p| p.extensions.contains(&extension)) {
-            Some(p) => p,
-            None => return Ok(MatchResult::Boolean(false)), // Not a supported language for this predicate.
-        };
+    let main_rs_content = r#"
+#[macro_use]
+mod macros;
+mod lib;
+mod traits;
 
-        // 2. Get the tree-sitter query string for the specific predicate.
-        let ts_query_str = match profile.queries.get(key) {
-            Some(q) if !q.is_empty() => q,
-            _ => return Ok(MatchResult::Boolean(false)), // This predicate is not implemented for this language yet.
-        };
+// TODO: Refactor this later
+use crate::lib::{User, Role};
 
-        // 3. Get content and lazily get the parsed tree from the file context.
-        let content = context.get_content()?.to_string(); // Clone to avoid borrow issues
-        let tree = match context.get_tree(profile.language.clone()) {
-            Ok(tree) => tree,
-            Err(e) => {
-                eprintln!(
-                    "Warning: Failed to parse {}: {}. Skipping.",
-                    context.path.display(),
-                    e
-                );
-                return Ok(MatchResult::Boolean(false));
-            }
-        };
+struct Cli {
+    pattern: String,
+}
 
-        // 4. Compile the tree-sitter query.
-        let query = Query::new(&profile.language, ts_query_str)
-            .with_context(|| format!("Failed to compile tree-sitter query for key {key:?}"))?;
-        let mut cursor = QueryCursor::new();
-        let mut ranges = Vec::new();
+impl Cli {
+    fn new() -> Self { Self { pattern: "".into() } }
+}
 
-        // 5. Execute the query and check for a match.
-        let captures = cursor.matches(&query, tree.root_node(), content.as_bytes());
+pub fn main() {
+    // This is the main function
+    let _u = User::new();
+    println!("Hello, world!");
+    my_macro!();
+}
+"#;
+    let mut main_rs = fs::File::create(src_dir.join("main.rs")).unwrap();
+    main_rs.write_all(main_rs_content.as_bytes()).unwrap();
 
-        for m in captures {
-            for capture in m.captures {
-                // We only care about nodes captured with the name `@match`.
-                let capture_name = &query.capture_names()[capture.index as usize];
-                if *capture_name != "match" {
-                    continue;
-                }
+    let lib_rs_content = r#"
+// This is a library file.
+use serde::Serialize;
 
-                let captured_node = capture.node;
-                let captured_text = captured_node.utf8_text(content.as_bytes())?;
+pub type UserId = u64;
 
-                // Use the correct matching strategy based on the predicate type.
-                let is_match = match key {
-                    // Content-based predicates check for substrings.
-                    PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
-                        captured_text.contains(value)
-                    }
-                    // Hook predicates can match any hook (`hook:.`) or a specific one
-                    PredicateKey::Hook | PredicateKey::CustomHook => {
-                        value == "." || captured_text == value
-                    }
-                    // Definition-based predicates require an exact match on the identifier, unless a wildcard is used.
-                    _ => value == "." || captured_text == value,
-                };
+pub struct User {
+    id: UserId,
+    name: String,
+}
 
-                if is_match {
-                    ranges.push(captured_node.range());
-                }
-            }
-        }
-
-        Ok(MatchResult::Hunks(ranges))
+impl User {
+    pub fn new() -> Self {
+        Self { id: 0, name: "".into() }
     }
+}
+
+pub enum Role {
+    Admin,
+    User,
+}
+"#;
+    let mut lib_rs = fs::File::create(src_dir.join("lib.rs")).unwrap();
+    lib_rs.write_all(lib_rs_content.as_bytes()).unwrap();
+
+    let readme_md_content = "# Test Project\nThis is a README for Role and User structs.";
+    let mut readme_md = fs::File::create(dir.path().join("README.md")).unwrap();
+    readme_md.write_all(readme_md_content.as_bytes()).unwrap();
+
+    // --- Add a Python file ---
+    let py_content = r#"
+# FIXME: Hardcoded path
+import os
+
+class Helper:
+    def __init__(self):
+        self.path = "/tmp/data"
+        self.do_setup()
+
+    def do_setup(self):
+        print("Setup complete")
+
+def run_helper():
+    h = Helper()
+    return h.path
+
+if __name__ == "__main__":
+    run_helper()
+"#;
+    let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
+    py_file.write_all(py_content.as_bytes()).unwrap();
+
+    // --- Add JS and TS files ---
+    let js_content = r#"
+// HACK: for demo purposes
+import { a } from './lib';
+
+export class OldLogger {
+    log(msg) { console.log("logging: " + msg); }
+}
+
+const logger = new OldLogger();
+logger.log("init");
+"#;
+    fs::File::create(src_dir.join("logger.js"))
+        .unwrap()
+        .write_all(js_content.as_bytes())
+        .unwrap();
+
+    let ts_content = r#"
+// REVIEW: Use a real logging library
+import * as path from 'path';
+
+export interface ILog {
+    message: string;
+}
+
+export type LogLevel = "info" | "warn" | "error";
+
+export function createLog(message: string): ILog {
+    const newLog = { message };
+    console.log(newLog);
+    return newLog;
+}
+"#;
+    fs::File::create(src_dir.join("log_utils.ts"))
+        .unwrap()
+        .write_all(ts_content.as_bytes())
+        .unwrap();
+
+    // --- Add a Go file ---
+    let go_content = r#"
+package main
+
+import "fmt"
+
+// Server represents our HTTP server.
+type Server struct {
+	Address string
+}
+
+func NewServer(addr string) *Server {
+	return &Server{Address: addr}
+}
+
+func main() {
+	server := NewServer(":8080")
+	fmt.Println(server.Address)
+}
+"#;
+    fs::File::create(src_dir.join("main.go"))
+        .unwrap()
+        .write_all(go_content.as_bytes())
+        .unwrap();
+
+    // --- Add a Java file ---
+    let java_dir = dir.path().join("src/main/java/com/example");
+    fs::create_dir_all(&java_dir).unwrap();
+    let java_content = r#"
+package com.example;
+
+import java.util.ArrayList;
+
+/**
+ * Main application class.
+ * HACK: This is just for a test.
+ */
+public class Application {
+    public static void main(String[] args) {
+        ArrayList<String> list = new ArrayList<>();
+        System.out.println("Hello from Java!");
+    }
+}
+"#;
+    fs::File::create(java_dir.join("Application.java"))
+        .unwrap()
+        .write_all(java_content.as_bytes())
+        .unwrap();
+
+    let traits_rs_content = r#"
+pub trait Summary {
+    fn summarize(&self) -> String;
+}
+
+pub struct NewsArticle {
+    pub headline: String,
+    pub location: String,
+    pub author: String,
+    pub content: String,
+}
+
+impl Summary for NewsArticle {
+    fn summarize(&self) -> String {
+        format!("{}, by {} ({})", self.headline, self.author, self.location)
+    }
+}
+"#;
+    let mut traits_rs = fs::File::create(src_dir.join("traits.rs")).unwrap();
+    traits_rs.write_all(traits_rs_content.as_bytes()).unwrap();
+
+    let macros_rs_content = r#"
+#[macro_export]
+macro_rules! my_macro {
+    () => {
+        println!("This is my macro!");
+    };
+}
+"#;
+    let mut macros_rs = fs::File::create(src_dir.join("macros.rs")).unwrap();
+    macros_rs.write_all(macros_rs_content.as_bytes()).unwrap();
+
+    // --- Add React Test Files ---
+    let app_tsx_content = r#"
+import React, { useState } from 'react';
+import { Button } from './Button';
+import useAuth from './useAuth';
+
+// A simple component
+function App() {
+  const [count, setCount] = useState(0);
+  const { user } = useAuth();
+
+  return (
+    <div>
+      <h1>Welcome, {user?.name}</h1>
+      <p>Count: {count}</p>
+      <Button onClick={() => setCount(c => c + 1)} disabled={false} />
+    </div>
+  );
+}
+export default App;
+"#;
+    fs::File::create(src_dir.join("App.tsx"))
+        .unwrap()
+        .write_all(app_tsx_content.as_bytes())
+        .unwrap();
+
+    let button_jsx_content = r#"
+// A button component
+export const Button = ({ onClick, disabled }) => {
+  return <button onClick={onClick} disabled={disabled}>Click Me</button>;
+};
+"#;
+    fs::File::create(src_dir.join("Button.jsx"))
+        .unwrap()
+        .write_all(button_jsx_content.as_bytes())
+        .unwrap();
+
+    let hook_ts_content = r#"
+// A custom hook
+export default function useAuth() {
+  return { user: { name: 'Guest' } };
+}
+"#;
+    fs::File::create(src_dir.join("useAuth.ts"))
+        .unwrap()
+        .write_all(hook_ts_content.as_bytes())
+        .unwrap();
+
+    dir
 }
 ```
 
-With these changes, `rdump` is now equipped with powerful, React-specific semantic search capabilities, fully integrated into its existing query language and evaluation engine. The final step would be to add integration tests to validate this new functionality, which I have omitted here for brevity but would be essential for a production change.
+```rust
+// rdump/tests/react_search.rs
+use assert_cmd::prelude::*;
+use predicates::prelude::*;
+use std::process::Command;
+
+mod common;
+use common::setup_test_project;
+
+#[test]
+fn test_component_predicate_finds_functional_component() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("component:App & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("function App()"));
+}
+
+#[test]
+fn test_component_predicate_finds_arrow_function_component() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("component:Button & ext:jsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("export const Button"));
+}
+
+#[test]
+fn test_element_predicate_finds_html_element() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:h1 & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<h1>Welcome, {user?.name}</h1>"));
+}
+
+#[test]
+fn test_element_predicate_finds_component_element() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:Button & ext:tsx")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<Button onClick="));
+}
+
+#[test]
+fn test_hook_predicate_finds_built_in_hook() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("hook:useState")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("const [count, setCount] = useState(0);"));
+}
+
+#[test]
+fn test_hook_predicate_finds_custom_hook_call() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("hook:useAuth")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("const { user } = useAuth();"));
+}
+
+#[test]
+fn test_customhook_predicate_finds_hook_definition() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("customhook:useAuth")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("export default function useAuth()"));
+}
+
+#[test]
+fn test_prop_predicate_finds_prop() {
+    let dir = setup_test_project();
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("prop:onClick")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("<Button onClick={")) // In App.tsx
+        .stdout(predicate::str::contains("<button onClick={onClick}")); // In Button.jsx
+}
+
+#[test]
+fn test_react_and_logic_across_predicates() {
+    let dir = setup_test_project();
+    // Find a Button element that is also passed a `disabled` prop.
+    Command::cargo_bin("rdump")
+        .unwrap()
+        .current_dir(dir.path())
+        .arg("search")
+        .arg("element:Button & prop:disabled")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("App.tsx"))
+        .stdout(predicate::str::contains("Button.jsx").not());
+}
+```

@@ -27,7 +27,8 @@ pub(super) static LANGUAGE_PROFILES: Lazy<HashMap<&'static str, LanguageProfile>
         m.insert("java", java::create_java_profile());
         m.insert("ts", typescript::create_typescript_profile());
         m.insert("js", javascript::create_javascript_profile());
-        m.insert("jsx", react::create_react_profile()); // Add react profile
+        m.insert("jsx", react::create_react_profile());
+        m.insert("tsx", react::create_react_profile());
         m
     });
 

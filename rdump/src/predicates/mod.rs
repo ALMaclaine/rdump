@@ -72,6 +72,8 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Interface, code_evaluator.clone());
     registry.insert(PredicateKey::Trait, code_evaluator.clone());
     registry.insert(PredicateKey::Type, code_evaluator.clone());
+    registry.insert(PredicateKey::Impl, code_evaluator.clone());
+    registry.insert(PredicateKey::Macro, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
     registry.insert(PredicateKey::Str, code_evaluator.clone());
     registry.insert(PredicateKey::Call, code_evaluator.clone());

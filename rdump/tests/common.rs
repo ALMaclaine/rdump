@@ -24,6 +24,10 @@ struct Cli {
     pattern: String,
 }
 
+impl Cli {
+    fn new() -> Self { Self { pattern: "".into() } }
+}
+
 pub fn main() {
     // This is the main function
     let _u = User::new();
@@ -86,7 +90,7 @@ if __name__ == "__main__":
     let mut py_file = fs::File::create(dir.path().join("helper.py")).unwrap();
     py_file.write_all(py_content.as_bytes()).unwrap();
 
-    // --- NEW: Add JS and TS files ---
+    // --- Add JS and TS files ---
     let js_content = r#"
 // HACK: for demo purposes
 import { a } from './lib';
@@ -124,7 +128,7 @@ export function createLog(message: string): ILog {
         .write_all(ts_content.as_bytes())
         .unwrap();
 
-    // --- NEW: Add a Go file ---
+    // --- Add a Go file ---
     let go_content = r#"
 package main
 
@@ -149,7 +153,7 @@ func main() {
         .write_all(go_content.as_bytes())
         .unwrap();
 
-    // --- NEW: Add a Java file ---
+    // --- Add a Java file ---
     let java_dir = dir.path().join("src/main/java/com/example");
     fs::create_dir_all(&java_dir).unwrap();
     let java_content = r#"
@@ -204,6 +208,54 @@ macro_rules! my_macro {
 "#;
     let mut macros_rs = fs::File::create(src_dir.join("macros.rs")).unwrap();
     macros_rs.write_all(macros_rs_content.as_bytes()).unwrap();
+
+    // --- Add React Test Files ---
+    let app_tsx_content = r#"
+import React, { useState } from 'react';
+import { Button } from './Button';
+import useAuth from './useAuth';
+
+// A simple component
+function App() {
+  const [count, setCount] = useState(0);
+  const { user } = useAuth();
+
+  return (
+    <div>
+      <h1>Welcome, {user?.name}</h1>
+      <p>Count: {count}</p>
+      <Button onClick={() => setCount(c => c + 1)} disabled={false} />
+    </div>
+  );
+}
+export default App;
+"#;
+    fs::File::create(src_dir.join("App.tsx"))
+        .unwrap()
+        .write_all(app_tsx_content.as_bytes())
+        .unwrap();
+
+    let button_jsx_content = r#"
+// A button component
+export const Button = ({ onClick, disabled }) => {
+  return <button onClick={onClick} disabled={disabled}>Click Me</button>;
+};
+"#;
+    fs::File::create(src_dir.join("Button.jsx"))
+        .unwrap()
+        .write_all(button_jsx_content.as_bytes())
+        .unwrap();
+
+    let hook_ts_content = r#"
+// A custom hook
+export default function useAuth() {
+  return { user: { name: 'Guest' } };
+}
+"#;
+    fs::File::create(src_dir.join("useAuth.ts"))
+        .unwrap()
+        .write_all(hook_ts_content.as_bytes())
+        .unwrap();
 
     dir
 }
