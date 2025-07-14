@@ -74,7 +74,13 @@ pub fn create_predicate_registry(
     registry.insert(PredicateKey::Type, code_evaluator.clone());
     registry.insert(PredicateKey::Comment, code_evaluator.clone());
     registry.insert(PredicateKey::Str, code_evaluator.clone());
-    registry.insert(PredicateKey::Call, code_evaluator);
+    registry.insert(PredicateKey::Call, code_evaluator.clone());
+    // Add React predicates
+    registry.insert(PredicateKey::Component, code_evaluator.clone());
+    registry.insert(PredicateKey::Element, code_evaluator.clone());
+    registry.insert(PredicateKey::Hook, code_evaluator.clone());
+    registry.insert(PredicateKey::CustomHook, code_evaluator.clone());
+    registry.insert(PredicateKey::Prop, code_evaluator);
 
     registry
 }

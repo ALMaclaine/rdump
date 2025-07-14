@@ -38,7 +38,7 @@ pub(super) fn create_typescript_profile() -> LanguageProfile {
 
     LanguageProfile {
         name: "TypeScript",
-        extensions: vec!["ts", "tsx"],
+        extensions: vec!["ts"],
         language,
         queries,
     }

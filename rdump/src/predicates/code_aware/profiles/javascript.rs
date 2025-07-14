@@ -34,7 +34,7 @@ pub(super) fn create_javascript_profile() -> LanguageProfile {
 
     LanguageProfile {
         name: "JavaScript",
-        extensions: vec!["js", "jsx"],
+        extensions: vec!["js"],
         language,
         queries,
     }

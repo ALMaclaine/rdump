@@ -34,6 +34,12 @@ pub enum PredicateKey {
     Str,
     // Usage
     Call,
+    // --- React-specific Predicates ---
+    Component,
+    Element,
+    Hook,
+    CustomHook,
+    Prop,
     // A key for testing or unknown predicates
     Other(String),
 }
@@ -61,6 +67,11 @@ impl AsRef<str> for PredicateKey {
             PredicateKey::Comment => "comment",
             PredicateKey::Str => "str",
             PredicateKey::Call => "call",
+            PredicateKey::Component => "component",
+            PredicateKey::Element => "element",
+            PredicateKey::Hook => "hook",
+            PredicateKey::CustomHook => "customhook",
+            PredicateKey::Prop => "prop",
             PredicateKey::Other(s) => s.as_str(),
         }
     }
@@ -90,6 +101,12 @@ impl From<&str> for PredicateKey {
             "comment" => Self::Comment,
             "str" => Self::Str,
             "call" => Self::Call,
+            // --- REACT ---
+            "component" => Self::Component,
+            "element" => Self::Element,
+            "hook" => Self::Hook,
+            "customhook" => Self::CustomHook,
+            "prop" => Self::Prop,
             // Any other key is captured here.
             other => Self::Other(other.to_string()),
         }

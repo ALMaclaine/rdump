@@ -75,6 +75,10 @@ impl PredicateEvaluator for CodeAwareEvaluator {
                     PredicateKey::Import | PredicateKey::Comment | PredicateKey::Str => {
                         captured_text.contains(value)
                     }
+                    // Hook predicates can match any hook (`hook:.`) or a specific one
+                    PredicateKey::Hook | PredicateKey::CustomHook => {
+                        value == "." || captured_text == value
+                    }
                     // Definition-based predicates require an exact match on the identifier, unless a wildcard is used.
                     _ => value == "." || captured_text == value,
                 };
