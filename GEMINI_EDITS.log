@@ -52,3 +52,7 @@ Date: 2025-07-13
 Change: Added comprehensive React/TSX test files.
 - Created insane_test_bed/react_comprehensive.tsx to serve as a test case for various React features.
 - Created rdump/tests/react_comprehensive_search.rs to test rdump's semantic search capabilities on the new TSX file.
+Date: 2025-07-13
+- Enhanced React component query in `react.rs` to correctly identify components wrapped in `React.memo`.
+- Refined the assertion in `test_find_jsx_comment` in `react_comprehensive_search.rs` to be more precise.
+
