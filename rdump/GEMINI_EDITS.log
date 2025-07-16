@@ -1,1 +1,6 @@
 2025-07-12: Fixed a regression where color codes were still present in the output file when using the --output flag. The logic was patched to disable colors when --output is used, unless --color=always is also specified. Added integration tests to verify this behavior and prevent future regressions.
+
+2025-07-16:
+- **Bug Fix**: Fixed a critical issue where the application would fail silently when an unknown predicate was used in a query (e.g., `str:foo`). The query evaluator now validates all predicates against the central registry after parsing and before execution, returning a clear "Unknown predicate" error for any invalid keys.
+- **Testing**: Added a new CLI test (`test_search_unknown_predicate_fails`) to `tests/cli.rs` to assert the correct erroring behavior. Corrected a pre-existing test in `tests/advanced_logic.rs` that was unintentionally asserting the old, incorrect silent failure.
+- **Documentation**: Overhauled the predicate reference in `README.md`. Replaced the separate, incomplete tables with a single, comprehensive table listing all available metadata, content, and code-aware (semantic) predicates with updated descriptions and examples. This ensures the documentation is accurate and provides a single source of truth for users.

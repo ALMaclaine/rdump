@@ -4,6 +4,7 @@ use anyhow::Result;
 use atty::Stream;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -13,8 +14,8 @@ use tree_sitter::Range;
 
 use crate::evaluator::{Evaluator, FileContext, MatchResult};
 use crate::formatter;
-use crate::parser;
-use crate::predicates;
+use crate::parser::{self, AstNode, PredicateKey};
+use crate::predicates::{self, PredicateEvaluator};
 
 /// The main entry point for the `search` command.
 pub fn run_search(mut args: SearchArgs) -> Result<()> {
@@ -116,6 +117,11 @@ pub fn perform_search(args: &SearchArgs) -> Result<Vec<(PathBuf, Vec<Range>)>> {
 
     // --- 2. Parse query ---
     let ast = parser::parse_query(&query_to_parse)?;
+
+    // --- 2.5 Validate Predicates ---
+    // Before any evaluation, check that all used predicates are valid.
+    // This prevents errors deep in the evaluation process for a simple typo.
+    validate_ast_predicates(&ast, &predicates::create_predicate_registry())?;
 
     // --- 3. Pre-filtering Pass (Metadata) ---
     // This pass uses an evaluator with only fast metadata predicates.
@@ -271,6 +277,33 @@ fn get_candidate_files(
         }
     }
     Ok(files)
+}
+
+/// Recursively traverses the AST to ensure all used predicates are valid.
+fn validate_ast_predicates(
+    node: &AstNode,
+    registry: &HashMap<PredicateKey, Box<dyn PredicateEvaluator + Send + Sync>>,
+) -> Result<()> {
+    match node {
+        AstNode::Predicate(key, _) => {
+            if !registry.contains_key(key) {
+                // The parser wraps unknown keys in `Other`, so we can check for that.
+                if let PredicateKey::Other(name) = key {
+                    return Err(anyhow!("Unknown predicate: '{}'", name));
+                }
+                // This case handles if a known key is somehow not in the registry.
+                return Err(anyhow!("Unknown predicate: '{}'", key.as_ref()));
+            }
+        }
+        AstNode::LogicalOp(_, left, right) => {
+            validate_ast_predicates(left, registry)?;
+            validate_ast_predicates(right, registry)?;
+        }
+        AstNode::Not(child) => {
+            validate_ast_predicates(child, registry)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

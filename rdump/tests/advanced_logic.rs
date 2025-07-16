@@ -77,12 +77,10 @@ fn test_behavior_on_unknown_predicate() {
         .arg("../insane_test_bed")
         .arg("nonexistent:predicate");
 
-    // The current behavior is to silently treat this as a "true" match for that predicate.
-    // Therefore, the command succeeds and finds all files. This test documents that behavior.
+    // The correct behavior is to fail with a clear error message.
     cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("code.rs"))
-        .stdout(predicate::str::contains("calls.rs"));
+        .failure()
+        .stderr(predicate::str::contains("Unknown predicate: 'nonexistent'"));
 }
 
 #[test]

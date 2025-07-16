@@ -320,36 +320,58 @@ cargo build --release
 
 **Golden Rule:** Always lead with `path:`, `name:`, or `ext:` if you can.
 
-### Predicate Reference: Metadata
+### Predicate Reference
 
-| Key | Example | Description |
-| :--- | :--- | :--- |
-| `ext` | `ext:ts` | Matches file extension. Case-insensitive. |
-| `name`| `name:"*_test.go"` | Matches filename (basename) against a glob pattern. |
-| `path`| `path:src/api` | Matches if the substring appears anywhere in the full path. |
-| `in`       | `in:"src/commands"`         | The directory path to search in. Matches all files that are descendants of the given directory.         |
-| `size`| `size:>=10kb` | Filters by size. Operators: `>`, `<`, `>=`, `<=`, `=`. Units: `b`, `kb`, `mb`, `gb`. |
-| `modified`| `modified:<2d` | Filters by modification time. Units: `m`, `h`, `d`, `w`, `y`. |
+Predicates are the core of RQL. They are grouped into three categories based on what they inspect.
 
-### Predicate Reference: Content
+#### Metadata Predicates (Fastest)
 
-| Key | Example | Description |
-| :--- | :--- | :--- |
-| `contains` | `contains:"// HACK"` | Fast literal substring search. |
-| `matches` | `matches:"\\w+_SECRET"` | Slower but powerful regex search. |
+These predicates operate on filesystem metadata and are extremely fast. **Always use them first in your query to narrow the search space.**
 
-### Predicate Reference: Code-Aware (Semantic)
+| Key        | Example                     | Description                                                                                             |
+| :--------- | :-------------------------- | :------------------------------------------------------------------------------------------------------ |
+| `ext`      | `ext:ts`                    | Matches the file extension. Case-insensitive.                                                           |
+| `name`     | `name:"*_test.go"`          | Matches the filename (the part after the last `/` or ``) against a glob pattern.                        |
+| `path`     | `path:src/api`              | Matches if the given substring appears anywhere in the full relative path of the file.                  |
+| `in`       | `in:"src/commands"`         | Matches all files that are descendants of the given directory.                                          |
+| `size`     | `size:>=10kb`               | Filters by file size. Operators: `>`, `<`, `>=`, `<=`, `=`. Units: `b`, `kb`, `mb`, `gb`.                 |
+| `modified` | `modified:<2d`               | Filters by last modification time relative to now. Units: `m` (minutes), `h` (hours), `d` (days), `w` (weeks), `y` (years). |
 
-| Key | Example | Description |
-| :--- | :--- | :--- |
-| `def` | `def:User` | Finds a generic definition (class, struct, trait, etc.). |
-| `func`| `func:get_user` | Finds a function or method definition. |
-| `import`| `import:serde` | Finds an import/use/require statement. |
-| `call`| `call:println` | Finds a function or method call site. |
-| `struct`| `struct:Point` | Finds a `struct` definition. |
-| `class`| `class:ApiHandler` | Finds a `class` definition. |
-| `comment`| `comment:TODO` | Finds text within any comment. |
-| `str` | `str:"api_key"` | Finds text within any string literal. |
+#### Content Predicates (Fast)
+
+These predicates inspect the raw text content of a file. They are slower than metadata predicates but faster than code-aware ones.
+
+| Key        | Example                     | Description                                                                                             |
+| :--------- | :-------------------------- | :------------------------------------------------------------------------------------------------------ |
+| `contains` | `contains:"// HACK"`        | Fast literal substring search. It does not support regular expressions.                                 |
+| `matches`  | `matches:"/user_[a-z]+/"`   | Slower but powerful regex search. The value must be a valid regular expression.                         |
+
+#### Code-Aware (Semantic) Predicates (Slower)
+
+These are `rdump`'s most powerful feature. They parse the code with `tree-sitter` to understand its structure. These are the most expensive predicates; use them after narrowing the search with metadata and content predicates.
+
+| Key          | Example                     | Description                                                                                             |
+| :----------- | :-------------------------- | :------------------------------------------------------------------------------------------------------ |
+| `def`        | `def:User`                  | Finds a generic definition (e.g., a `class` in Python, a `struct` in Rust, a `type` in Go).             |
+| `func`       | `func:get_user`             | Finds a function or method definition.                                                                  |
+| `import`     | `import:serde`              | Finds an import, `use`, or `require` statement.                                                         |
+| `call`       | `call:println`              | Finds a function or method call site.                                                                   |
+| `comment`    | `comment:TODO`              | Finds text within any code comment (`//`, `#`, `/* ... */`, etc.).                                      |
+| `str`        | `str:"api_key"`             | Finds text **only inside a string literal** (e.g., `"api_key"` or `'api_key'`). Much more precise than `contains`. |
+| `class`      | `class:ApiHandler`          | Finds a `class` definition.                                                                             |
+| `struct`     | `struct:Point`              | Finds a `struct` definition (primarily for Rust/Go).                                                    |
+| `enum`       | `enum:Status`               | Finds an `enum` definition.                                                                             |
+| `interface`  | `interface:Serializable`    | Finds an `interface` definition (primarily for Go/TypeScript/Java).                                     |
+| `trait`      | `trait:Runnable`            | Finds a `trait` definition (primarily for Rust).                                                        |
+| `type`       | `type:UserID`               | Finds a `type` alias definition.                                                                        |
+| `impl`       | `impl:User`                 | Finds an `impl` block (Rust).                                                                           |
+| `macro`      | `macro:println`             | Finds a macro definition or invocation (Rust).                                                          |
+| `component`  | `component:Button`          | **React:** Finds a JSX element definition (e.g., `<Button ... />`).                                     |
+| `element`    | `element:div`               | **React:** Finds a specific JSX element by its tag name (e.g., `<div>`).                                |
+| `hook`       | `hook:useState`             | **React:** Finds a call to a standard React hook.                                                       |
+| `customhook` | `customhook:useAuth`        | **React:** Finds a call to a custom hook (a function starting with `use`).                              |
+| `prop`       | `prop:onClick`              | **React:** Finds a JSX prop (attribute) being passed to a component.                                    |
+
 
 ### Advanced Querying Techniques
 
