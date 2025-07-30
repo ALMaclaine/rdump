@@ -559,3 +559,18 @@ fn test_search_unknown_predicate_fails() -> Result<(), Box<dyn std::error::Error
         .stderr(predicate::str::contains("Unknown predicate: 'unknown'"));
     Ok(())
 }
+
+#[test]
+fn test_search_implicit_and_with_negation_fails() -> Result<(), Box<dyn std::error::Error>> {
+    let (_dir, root) = setup_test_dir();
+
+    let mut cmd = Command::cargo_bin("rdump")?;
+    cmd.current_dir(&root);
+    // This query is invalid because it's missing an `&` or `|` operator.
+    cmd.arg("search").arg("in:. !name:*.txt");
+
+    cmd.assert()
+        .failure()
+        .stderr(predicate::str::contains("missing logical operator"));
+    Ok(())
+}

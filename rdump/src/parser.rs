@@ -162,9 +162,27 @@ pub fn parse_query(query: &str) -> Result<AstNode> {
 // This function is the heart of the parser, using the Pratt method. It consumes
 // the token stream for a single expression level.
 fn build_ast_from_expression_pairs(pairs: Pairs<Rule>) -> Result<AstNode> {
-    if pairs.clone().last().map_or(false, |p| matches!(p.as_rule(), Rule::AND | Rule::OR)) {
-        return Err(anyhow!("Invalid query syntax: query cannot end with an operator."));
+    if pairs
+        .clone()
+        .last()
+        .map_or(false, |p| matches!(p.as_rule(), Rule::AND | Rule::OR))
+    {
+        return Err(anyhow!(
+            "Invalid query syntax: query cannot end with an operator."
+        ));
     }
+
+    // Check for implicit AND operators, which are not supported.
+    // This prevents a panic in the Pratt parser when two terms are adjacent.
+    let mut last_was_term = false;
+    for pair in pairs.clone() {
+        let current_is_term = matches!(pair.as_rule(), Rule::term);
+        if current_is_term && last_was_term {
+            return Err(anyhow!("Invalid query syntax: missing logical operator (like '&' or '|') between predicates. Implicit operators are not supported."));
+        }
+        last_was_term = current_is_term;
+    }
+
     PRATT_PARSER
         .map_primary(|primary| build_ast_from_term(primary))
         .map_infix(|lhs, op, rhs| {
