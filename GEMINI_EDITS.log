@@ -65,3 +65,9 @@ Date: 2025-07-13
 - **Fixed CLI Preset Logic**: Made the `QUERY` argument optional for the `search` command to allow the use of presets without a query string. Updated the search logic to correctly combine presets and explicit queries.
 - **Updated Tests**: Fixed multiple test suites (`search_integration`, `react_comprehensive_search`, `parser`) to align with the parser and CLI logic changes, ensuring all tests pass.
 - **Removed Warnings**: Removed an unused import in `tests/formatter.rs`.
+Date: 2025-07-30
+Description: Replaced the unmaintained `atty` crate with `std::io::IsTerminal` to fix a potential unaligned pointer issue on Windows. This involved removing the dependency from `Cargo.toml` and updating the code in `rdump/src/commands/search.rs` to use the new standard library feature.
+
+Files modified:
+- rdump/Cargo.toml
+- rdump/src/commands/search.rs
