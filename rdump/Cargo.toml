@@ -1,11 +1,11 @@
 [package]
 name = "rdump"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A fast, expressive, and language-aware file search tool."
 authors = ["Your Name <you@example.com>"]
 license = "MIT"
-repository = "https://github.com/your-username/rdump"
+repository = "https://github.com/almaclaine/rdump"
 readme = "README.md"
 keywords = ["search", "cli", "file", "tool", "code-aware"]
 categories = ["command-line-utilities", "filesystem"]
