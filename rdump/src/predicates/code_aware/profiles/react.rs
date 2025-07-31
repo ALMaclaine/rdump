@@ -63,22 +63,24 @@ pub(super) fn create_react_profile() -> LanguageProfile {
     let custom_hook_query = r#"
 [
   (function_declaration
-    name: (identifier) @match)
+    name: (identifier) @match
+    (#match? @match "^use[A-Z]"))
   (lexical_declaration
     (variable_declarator
       name: (identifier) @match
-      value: (arrow_function)))
+      value: (arrow_function))
+    (#match? @match "^use[A-Z]"))
   (export_statement
-    declaration: [
-      (function_declaration
-        name: (identifier) @match)
-      (lexical_declaration
-        (variable_declarator
-          name: (identifier) @match
-          value: (arrow_function)))
-    ])
+    declaration: (function_declaration
+      name: (identifier) @match)
+    (#match? @match "^use[A-Z]"))
+  (export_statement
+    declaration: (lexical_declaration
+      (variable_declarator
+        name: (identifier) @match
+        value: (arrow_function)))
+    (#match? @match "^use[A-Z]"))
 ]
-(#match? @match "^use[A-Z]")
 "#;
     queries.insert(PredicateKey::Hook, hook_query.to_string());
     queries.insert(PredicateKey::CustomHook, custom_hook_query.to_string());
