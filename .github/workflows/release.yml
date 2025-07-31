@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build-release:
+    name: Build and Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: rdump-linux-amd64
+          - os: macos-latest
+            asset_name: rdump-macos-amd64
+          - os: windows-latest
+            asset_name: rdump-windows-amd64.exe
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Build binary
+        run: cargo build --release --manifest-path rdump/Cargo.toml
+        
+      - name: Rename binary for release
+        run: |
+          if [ "${{ matrix.os }}" == "windows-latest" ]; then
+            mv rdump/target/release/rdump.exe ${{ matrix.asset_name }}
+          else
+            mv rdump/target/release/rdump ${{ matrix.asset_name }}
+          fi
+        shell: bash
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            ${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
