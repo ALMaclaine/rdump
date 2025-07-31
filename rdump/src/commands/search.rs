@@ -1,12 +1,11 @@
 use crate::{config, ColorChoice, SearchArgs};
 use anyhow::anyhow;
 use anyhow::Result;
-use atty::Stream;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tempfile::NamedTempFile;
@@ -39,7 +38,7 @@ pub fn run_search(mut args: SearchArgs) -> Result<()> {
         match args.color {
             ColorChoice::Always => true,
             ColorChoice::Never => false,
-            ColorChoice::Auto => atty::is(Stream::Stdout),
+            ColorChoice::Auto => io::stdout().is_terminal(),
         }
     };
 

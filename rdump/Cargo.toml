@@ -28,7 +28,6 @@ tree-sitter-typescript = "0.21.0"
 tree-sitter-go = "0.21.0"
 tree-sitter-java = "0.21.0"
 syntect = "5.2.0"
-atty = "0.2.14"
 dunce = "1.0.4"
 globset = "0.4.10"
 
